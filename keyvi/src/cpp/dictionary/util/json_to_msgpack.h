@@ -82,6 +82,52 @@ MSGPACK_API_VERSION_NAMESPACE(v1) {
     return v;
   }
 
+
+  inline boost::container::flat_map<std::string, boost::variant<std::string, int, double, bool>>& operator>> (const object& o, boost::container::flat_map<std::string, boost::variant<std::string, int, double, bool>>& v)
+    {
+      switch (o.type)
+      {
+      /*case msgpack::type::BOOLEAN: v.SetBool(o.via.boolean); break;
+      case msgpack::type::POSITIVE_INTEGER: v.SetUint64(o.via.u64); break;
+      case msgpack::type::NEGATIVE_INTEGER: v.SetInt64(o.via.i64); break;
+      case msgpack::type::FLOAT: v.SetDouble(o.via.f64); break;
+      case msgpack::type::STR: v.SetString(o.via.str.ptr, o.via.str.size); break;
+      case msgpack::type::ARRAY:{
+        v.SetArray();
+        v.Reserve(o.via.array.size, v.GetAllocator());
+        msgpack::object* ptr = o.via.array.ptr;
+        msgpack::object* END = ptr + o.via.array.size;
+        for (; ptr < END; ++ptr)
+        {
+          rapidjson::GenericDocument<Encoding, Allocator, StackAllocator> element(&v.GetAllocator());
+          ptr->convert(&element);
+          v.PushBack(static_cast<rapidjson::GenericValue<Encoding, Allocator>&>(element), v.GetAllocator());
+        }
+      }
+        break;*/
+      case msgpack::type::MAP: {
+        //v.SetObject();
+        msgpack::object_kv* ptr = o.via.map.ptr;
+        msgpack::object_kv* END = ptr + o.via.map.size;
+        for (; ptr < END; ++ptr)
+        {
+          if (ptr->key.type == msgpack::type::STR && ptr->val.type == msgpack::type::STR){
+          std::string value;
+          ptr->val.convert(&value);
+          v[ptr->key.via.str.ptr] = value;
+          }
+        }
+      }
+        break;
+      //case msgpack::type::NIL:
+      default:
+        break;
+
+      }
+      return v;
+    }
+
+
   template <typename Encoding, typename Allocator>
   inline rapidjson::GenericValue<Encoding, Allocator>& operator>> (const object& o, rapidjson::GenericValue<Encoding, Allocator>& v)
   {

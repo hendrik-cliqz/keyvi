@@ -50,6 +50,9 @@ MSGPACK_API_VERSION_NAMESPACE(v1) {
   template <typename Encoding, typename Allocator, typename StackAllocator>
   inline void operator<< (object::with_zone& o, rapidjson::GenericDocument<Encoding, Allocator, StackAllocator>& v);
 
+  inline boost::container::flat_map<std::string, boost::variant<std::string, int, double, bool>>& operator>> (const object& o, boost::container::flat_map<std::string, boost::variant<std::string, int, double, bool>>& v);
+
+
 } // MSGPACK_API_VERSION_NAMESPACE(v1)
 } // namespace msgpack
 

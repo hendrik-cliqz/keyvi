@@ -318,6 +318,8 @@ final {
         }
       };
 
+
+
       class JsonValueStoreReader final: public IValueStoreReader {
        public:
         using IValueStoreReader::IValueStoreReader;
@@ -356,22 +358,13 @@ final {
         virtual attributes_t GetValueAsAttributeVector(uint64_t fsa_value)
             override {
           attributes_t attributes(new attributes_raw_t());
+          //attributes_raw_t* rw = new attributes_raw_t();
 
-          std::string raw_value = util::decodeVarintString(strings_ + fsa_value);
+          //rapidjson::Document json_document = GetRapidJsonDocument(fsa_value);
 
           //auto length = util::decodeVarint((uint8_t*) strings_ + fsa_value);
           //std::string raw_value(strings_ + fsa_value, length);
 
-          (*attributes)["value"] = raw_value;
-          return attributes;
-        }
-
-        virtual std::string GetRawValueAsString(uint64_t fsa_value) override {
-          return util::decodeVarintString(strings_ + fsa_value);
-        }
-
-        virtual std::string GetValueAsString(uint64_t fsa_value) override {
-          TRACE("JsonValueStoreReader GetValueAsString");
           std::string packed_string = util::decodeVarintString(strings_ + fsa_value);
 
           if (packed_string[0] == ' '){
@@ -383,13 +376,46 @@ final {
 
           msgpack::unpacked doc;
           msgpack::unpack(&doc, packed_string.data(), packed_string.size());
-          rapidjson::Document json_document;
+          doc.get().convert(attributes.get());
 
-          doc.get().convert(&json_document);
+/*
+          for (rapidjson::Value::ConstMemberIterator itr = json_document.MemberBegin();
+              itr != json_document.MemberEnd(); ++itr) {
+            switch (itr->value.GetType()){
+              case rapidjson::kStringType:
+                (*attributes)[itr->name.GetString()] = itr->value.GetString();
+                break;
+              case rapidjson::kNumberType:
+                if (itr->value.IsInt()) {
+                  (*attributes)[itr->name.GetString()] = itr->value.GetInt();
+                } else {
+                  (*attributes)[itr->name.GetString()] = itr->value.GetDouble();
+                }
+                break;
+              case rapidjson::kFalseType:
+                (*attributes)[itr->name.GetString()] = itr->value.GetBool();
+                break;
+              default:
+                (*attributes)[itr->name.GetString()] = "unsupported type";
+            }
+          }*/
+
+          //(*attributes)["value"] = raw_value;
+          return attributes;
+        }
+
+        virtual std::string GetRawValueAsString(uint64_t fsa_value) override {
+          return util::decodeVarintString(strings_ + fsa_value);
+        }
+
+        virtual std::string GetValueAsString(uint64_t fsa_value) override {
+          TRACE("JsonValueStoreReader GetValueAsString");
+          rapidjson::Document json_document = GetRapidJsonDocument(fsa_value);
 
           rapidjson::StringBuffer buffer;
           rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
           json_document.Accept(writer);
+
           return buffer.GetString();
         }
 
@@ -445,6 +471,26 @@ final {
 
             return outstring;
         }
+
+        inline rapidjson::Document GetRapidJsonDocument(uint64_t fsa_value){
+          std::string packed_string = util::decodeVarintString(strings_ + fsa_value);
+
+          if (packed_string[0] == ' '){
+            TRACE("unpack zlib compressed string");
+            packed_string = decompress_string(packed_string);
+
+            TRACE("unpacking %s", packed_string.c_str());
+          }
+
+          msgpack::unpacked doc;
+          msgpack::unpack(&doc, packed_string.data(), packed_string.size());
+          rapidjson::Document json_document;
+
+          doc.get().convert(&json_document);
+
+          return json_document;
+        }
+
       };
 
 } /* namespace internal */
