@@ -85,6 +85,10 @@ class EntryIterator final{
     return fsa_->GetValueAsString(current_value_);
   }
 
+  uint32_t GetWeight() const {
+    return fsa_->GetWeightValue(current_state_);
+  }
+
   EntryIterator &operator=(const EntryIterator &other) {
     fsa_ = other.fsa_;
     current_state_ = other.current_state_;
