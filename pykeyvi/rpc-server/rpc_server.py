@@ -7,6 +7,7 @@ from datetime import datetime
 import operator
 import os
 import pykeyvi
+from mprpc import RPCClient
 
 from mprpc import RPCServer
 
@@ -104,3 +105,5 @@ class KeyviServer(RPCServer):
         self.compiler.WriteToFile(filename + ".part")
         os.rename(filename+".part", filename)
         self.compiler = None
+        c = RPCClient('localhost', 6100)
+        c.call('register_new_segment', filename)
