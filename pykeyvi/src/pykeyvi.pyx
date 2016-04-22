@@ -242,7 +242,7 @@ cdef class Dictionary:
         py_result.end = _r.end()
         return py_result
     
-    def GetNear(self, bytes in_0 ,  minimum_prefix_length ):
+    def _GetNear_0(self, bytes in_0 ,  minimum_prefix_length ):
         assert isinstance(in_0, bytes), 'arg in_0 wrong type'
         assert isinstance(minimum_prefix_length, (int, long)), 'arg minimum_prefix_length wrong type'
     
@@ -252,6 +252,27 @@ cdef class Dictionary:
         py_result.it = _r.begin()
         py_result.end = _r.end()
         return py_result
+    
+    def _GetNear_1(self, bytes in_0 ,  minimum_prefix_length ,  greedy ):
+        assert isinstance(in_0, bytes), 'arg in_0 wrong type'
+        assert isinstance(minimum_prefix_length, (int, long)), 'arg minimum_prefix_length wrong type'
+        assert isinstance(greedy, (int, long)), 'arg greedy wrong type'
+    
+    
+    
+        cdef _MatchIteratorPair _r = self.inst.get().GetNear((<libcpp_string>in_0), (<size_t>minimum_prefix_length), (<bool>greedy))
+        cdef MatchIterator py_result = MatchIterator.__new__(MatchIterator)
+        py_result.it = _r.begin()
+        py_result.end = _r.end()
+        return py_result
+    
+    def GetNear(self, *args):
+        if (len(args)==2) and (isinstance(args[0], bytes)) and (isinstance(args[1], (int, long))):
+            return self._GetNear_0(*args)
+        elif (len(args)==3) and (isinstance(args[0], bytes)) and (isinstance(args[1], (int, long))) and (isinstance(args[2], (int, long))):
+            return self._GetNear_1(*args)
+        else:
+               raise Exception('can not handle type of %s' % (args,))
     
     def _init_0(self, bytes filename ):
         assert isinstance(filename, bytes), 'arg filename wrong type'
@@ -285,12 +306,12 @@ cdef class Dictionary:
     def get (self, key, default = None):
         assert isinstance(key, bytes), 'arg in_0 wrong type'
     
-        cdef _Match * _r = new _Match(deref(self.inst.get())[(<const_char *>key)])
+        cdef shared_ptr[_Match] _r = shared_ptr[_Match](new _Match(deref(self.inst.get())[(<const_char *>key)]))
 
-        if _r.IsEmpty():
+        if _r.get().IsEmpty():
             return default
         cdef Match py_result = Match.__new__(Match)
-        py_result.inst = shared_ptr[_Match](_r)
+        py_result.inst = _r
         return py_result
 
     def __contains__(self, key):
@@ -304,12 +325,12 @@ cdef class Dictionary:
     def __getitem__ (self, key):
         assert isinstance(key, bytes), 'arg in_0 wrong type'
     
-        cdef _Match * _r = new _Match(deref(self.inst.get())[(<const_char *>key)])
+        cdef shared_ptr[_Match] _r = shared_ptr[_Match](new _Match(deref(self.inst.get())[(<const_char *>key)]))
 
-        if _r.IsEmpty():
+        if _r.get().IsEmpty():
             raise KeyError(key)
         cdef Match py_result = Match.__new__(Match)
-        py_result.inst = shared_ptr[_Match](_r)
+        py_result.inst = _r
         return py_result
 
     def _key_iterator_wrapper(self, iterator):
