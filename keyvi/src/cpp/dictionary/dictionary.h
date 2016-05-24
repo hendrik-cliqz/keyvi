@@ -40,8 +40,28 @@ namespace dictionary {
 class Dictionary
 final {
    public:
-    Dictionary(const char* filename, bool load_lazy = false)
-        : fsa_(new fsa::Automata(filename, load_lazy)) {
+
+  /**
+   * DEPRECATED: Initialize a dictionary in lazy or non-lazy mode.
+   *
+   * Use Dictionary(filename, loading_strategy) instead.
+   *
+   * @param filename the filename
+   * @param load_lazy whether to load lazy.
+   */
+    Dictionary(const char* filename, bool load_lazy)
+        : fsa_(std::make_shared<fsa::Automata>(filename, load_lazy)) {
+      TRACE("Dictionary from file %s", filename);
+    }
+
+    /**
+     * Initialize a dictionary from a file.
+     *
+     * @param filename filename to load keyvi file from.
+     * @param loading_strategy optional: Loading strategy to use.
+     */
+    explicit Dictionary(const char* filename, loading_strategy_types loading_strategy = loading_strategy_types::lazy)
+       : fsa_(std::make_shared<fsa::Automata>(filename, loading_strategy)) {
       TRACE("Dictionary from file %s", filename);
     }
 
@@ -332,14 +352,21 @@ final {
     }
 
    /**
-    * Match a key near
+    * Match a key near: Match as much as possible exact given the minimum prefix length and then return everything below.
+    *
+    * If greedy is True it matches everything below the minimum_prefix_length, but in the order of exact first.
     *
     * @param key
     * @param minimum_prefix_length
+    * @param greedy if true matches everything below minimum prefix
     * @return
     */
-   MatchIterator::MatchIteratorPair GetNear(const std::string& key, size_t minimum_prefix_length) {
+   MatchIterator::MatchIteratorPair GetNear(const std::string& key, size_t minimum_prefix_length, bool greedy=false) {
      uint64_t state = fsa_->GetStartState();
+
+     if (key.size() < minimum_prefix_length) {
+       return MatchIterator::EmptyIteratorPair();
+     }
 
      TRACE("GetNear %s, matching prefix first", key.substr(0, minimum_prefix_length).c_str());
      for (size_t i = 0; i < minimum_prefix_length; ++i) {
@@ -375,7 +402,7 @@ final {
                      traversal_stack));
 
      auto tfunc =
-       [data, key, minimum_prefix_length] () {
+       [data, key, minimum_prefix_length, greedy] () {
          TRACE("prefix completion callback called");
 
 
@@ -395,15 +422,18 @@ final {
                Match m(0,
                    data->traverser.GetDepth() + key.size(),
                    match_str,
-                   0,
+                   minimum_prefix_length + data->traverser.GetTraversalPayload().exact_depth,
                    data->traverser.GetFsa(),
                    data->traverser.GetStateValue());
 
+               if (!greedy) {
+                 // remember the depth
+                 TRACE("found a match, remember depth, only allow matches with same depth %ld", data->traverser.GetTraversalPayload().exact_depth);
+                 data->matched_depth = data->traverser.GetTraversalPayload().exact_depth;
+               }
+
                data->traverser++;
 
-               // remember the depth
-               TRACE("found a match, remember depth, only allow matches with same depth %ld", data->traverser.GetTraversalPayload().exact_depth);
-               data->matched_depth = data->traverser.GetTraversalPayload().exact_depth;
                return m;
              }
              data->traverser++;

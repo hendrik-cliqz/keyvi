@@ -1,17 +1,22 @@
 
 
     def get (self, key, default = None):
+        if isinstance(key, unicode):
+            key = key.encode('utf-8')
         assert isinstance(key, bytes), 'arg in_0 wrong type'
     
-        cdef _Match * _r = new _Match(deref(self.inst.get())[(<const_char *>key)])
+        cdef shared_ptr[_Match] _r = shared_ptr[_Match](new _Match(deref(self.inst.get())[(<const_char *>key)]))
 
-        if _r.IsEmpty():
+        if _r.get().IsEmpty():
             return default
         cdef Match py_result = Match.__new__(Match)
-        py_result.inst = shared_ptr[_Match](_r)
+        py_result.inst = _r
         return py_result
 
     def __contains__(self, key):
+        if isinstance(key, unicode):
+            key = key.encode('utf-8')
+
         assert isinstance(key, bytes), 'arg in_0 wrong type'
 
         return self.inst.get().Contains(key)
@@ -20,14 +25,17 @@
         return self.inst.get().GetSize()
 
     def __getitem__ (self, key):
+        if isinstance(key, unicode):
+            key = key.encode('utf-8')
+
         assert isinstance(key, bytes), 'arg in_0 wrong type'
     
-        cdef _Match * _r = new _Match(deref(self.inst.get())[(<const_char *>key)])
+        cdef shared_ptr[_Match] _r = shared_ptr[_Match](new _Match(deref(self.inst.get())[(<const_char *>key)]))
 
-        if _r.IsEmpty():
+        if _r.get().IsEmpty():
             raise KeyError(key)
         cdef Match py_result = Match.__new__(Match)
-        py_result.inst = shared_ptr[_Match](_r)
+        py_result.inst = _r
         return py_result
 
     def _key_iterator_wrapper(self, iterator):

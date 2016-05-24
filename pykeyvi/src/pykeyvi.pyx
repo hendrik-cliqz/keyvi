@@ -11,6 +11,7 @@ from  libc.string cimport const_char
 from cython.operator cimport dereference as deref, preincrement as inc, address as address
 from cython.operator cimport dereference, preincrement
 cimport cython.operator as co
+from dictionary cimport loading_strategy_types as _loading_strategy_types
 from cluster cimport JumpConsistentHashString as _JumpConsistentHashString_cluster
 from dictionary_compiler cimport CompletionDictionaryCompiler as _CompletionDictionaryCompiler
 from dictionary cimport Dictionary as _Dictionary
@@ -242,7 +243,7 @@ cdef class Dictionary:
         py_result.end = _r.end()
         return py_result
     
-    def GetNear(self, bytes in_0 ,  minimum_prefix_length ):
+    def _GetNear_0(self, bytes in_0 ,  minimum_prefix_length ):
         assert isinstance(in_0, bytes), 'arg in_0 wrong type'
         assert isinstance(minimum_prefix_length, (int, long)), 'arg minimum_prefix_length wrong type'
     
@@ -253,22 +254,43 @@ cdef class Dictionary:
         py_result.end = _r.end()
         return py_result
     
+    def _GetNear_1(self, bytes in_0 ,  minimum_prefix_length ,  greedy ):
+        assert isinstance(in_0, bytes), 'arg in_0 wrong type'
+        assert isinstance(minimum_prefix_length, (int, long)), 'arg minimum_prefix_length wrong type'
+        assert isinstance(greedy, (int, long)), 'arg greedy wrong type'
+    
+    
+    
+        cdef _MatchIteratorPair _r = self.inst.get().GetNear((<libcpp_string>in_0), (<size_t>minimum_prefix_length), (<bool>greedy))
+        cdef MatchIterator py_result = MatchIterator.__new__(MatchIterator)
+        py_result.it = _r.begin()
+        py_result.end = _r.end()
+        return py_result
+    
+    def GetNear(self, *args):
+        if (len(args)==2) and (isinstance(args[0], bytes)) and (isinstance(args[1], (int, long))):
+            return self._GetNear_0(*args)
+        elif (len(args)==3) and (isinstance(args[0], bytes)) and (isinstance(args[1], (int, long))) and (isinstance(args[2], (int, long))):
+            return self._GetNear_1(*args)
+        else:
+               raise Exception('can not handle type of %s' % (args,))
+    
     def _init_0(self, bytes filename ):
         assert isinstance(filename, bytes), 'arg filename wrong type'
         cdef const_char * input_filename = <const_char *> filename
         self.inst = shared_ptr[_Dictionary](new _Dictionary(input_filename))
     
-    def _init_1(self, bytes filename ,  load_lazy ):
+    def _init_1(self, bytes filename , int in_1 ):
         assert isinstance(filename, bytes), 'arg filename wrong type'
-        assert isinstance(load_lazy, (int, long)), 'arg load_lazy wrong type'
+        assert in_1 in [0, 1, 2, 3, 4, 5, 6, 7], 'arg in_1 wrong type'
         cdef const_char * input_filename = <const_char *> filename
     
-        self.inst = shared_ptr[_Dictionary](new _Dictionary(input_filename, (<bool>load_lazy)))
+        self.inst = shared_ptr[_Dictionary](new _Dictionary(input_filename, (<_loading_strategy_types>in_1)))
     
     def __init__(self, *args):
         if (len(args)==1) and (isinstance(args[0], bytes)):
              self._init_0(*args)
-        elif (len(args)==2) and (isinstance(args[0], bytes)) and (isinstance(args[1], (int, long))):
+        elif (len(args)==2) and (isinstance(args[0], bytes)) and (args[1] in [0, 1, 2, 3, 4, 5, 6, 7]):
              self._init_1(*args)
         else:
                raise Exception('can not handle type of %s' % (args,))
@@ -283,17 +305,22 @@ cdef class Dictionary:
         return py_result
     
     def get (self, key, default = None):
+        if isinstance(key, unicode):
+            key = key.encode('utf-8')
         assert isinstance(key, bytes), 'arg in_0 wrong type'
     
-        cdef _Match * _r = new _Match(deref(self.inst.get())[(<const_char *>key)])
+        cdef shared_ptr[_Match] _r = shared_ptr[_Match](new _Match(deref(self.inst.get())[(<const_char *>key)]))
 
-        if _r.IsEmpty():
+        if _r.get().IsEmpty():
             return default
         cdef Match py_result = Match.__new__(Match)
-        py_result.inst = shared_ptr[_Match](_r)
+        py_result.inst = _r
         return py_result
 
     def __contains__(self, key):
+        if isinstance(key, unicode):
+            key = key.encode('utf-8')
+
         assert isinstance(key, bytes), 'arg in_0 wrong type'
 
         return self.inst.get().Contains(key)
@@ -302,14 +329,17 @@ cdef class Dictionary:
         return self.inst.get().GetSize()
 
     def __getitem__ (self, key):
+        if isinstance(key, unicode):
+            key = key.encode('utf-8')
+
         assert isinstance(key, bytes), 'arg in_0 wrong type'
     
-        cdef _Match * _r = new _Match(deref(self.inst.get())[(<const_char *>key)])
+        cdef shared_ptr[_Match] _r = shared_ptr[_Match](new _Match(deref(self.inst.get())[(<const_char *>key)]))
 
-        if _r.IsEmpty():
+        if _r.get().IsEmpty():
             raise KeyError(key)
         cdef Match py_result = Match.__new__(Match)
-        py_result.inst = shared_ptr[_Match](_r)
+        py_result.inst = _r
         return py_result
 
     def _key_iterator_wrapper(self, iterator):
@@ -455,6 +485,16 @@ cdef class ForwardBackwardCompletion:
         cdef shared_ptr[_Dictionary] input_in_0 = in_0.inst
         cdef shared_ptr[_Dictionary] input_in_1 = in_1.inst
         self.inst = shared_ptr[_ForwardBackwardCompletion](new _ForwardBackwardCompletion(input_in_0, input_in_1)) 
+
+cdef class loading_strategy_types:
+    default_os = 0
+    lazy = 1
+    populate = 2
+    populate_key_part = 3
+    populate_lazy = 4
+    lazy_no_readahead = 5
+    lazy_no_readahead_value_part = 6
+    populate_key_part_no_readahead_value_part = 7 
 
 cdef class CompletionDictionaryCompiler:
 

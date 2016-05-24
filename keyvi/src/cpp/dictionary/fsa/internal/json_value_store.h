@@ -38,6 +38,7 @@
 #include "rapidjson/stringbuffer.h"
 
 #include "dictionary/fsa/internal/ivalue_store.h"
+#include "dictionary/fsa/internal/memory_map_flags.h"
 #include "dictionary/fsa/internal/serialization_utils.h"
 #include "dictionary/fsa/internal/lru_generation_cache.h"
 #include "dictionary/fsa/internal/memory_map_manager.h"
@@ -140,7 +141,7 @@ class JsonValueStore final : public IValueStoreWriter {
 
     const RawPointerForCompare<MemoryMapManager> stp(string_buffer_.data(), string_buffer_.size(),
                                                      values_extern_);
-    const RawPointer p = hash_.Get(stp);
+    const RawPointer<> p = hash_.Get(stp);
 
     if (!p.IsEmpty()) {
       // found the same value again, minimize
@@ -155,7 +156,7 @@ class JsonValueStore final : public IValueStoreWriter {
     uint64_t pt = AddValue();
 
     TRACE("add value to hash at %d, length %d", pt, string_buffer_.size());
-    hash_.Add(RawPointer(pt, stp.GetHashcode(), string_buffer_.size()));
+    hash_.Add(RawPointer<>(pt, stp.GetHashcode(), string_buffer_.size()));
 
     return pt;
   }
@@ -205,7 +206,7 @@ class JsonValueStore final : public IValueStoreWriter {
   size_t compression_threshold_;
   bool minimize_ = true;
 
-  LeastRecentlyUsedGenerationsCache<RawPointer> hash_;
+  LeastRecentlyUsedGenerationsCache<RawPointer<>> hash_;
   compression::buffer_t string_buffer_;
   msgpack::sbuffer msgpack_buffer_;
   size_t number_of_values_ = 0;
@@ -226,7 +227,7 @@ class JsonValueStore final : public IValueStoreWriter {
 
      const RawPointerForCompare<MemoryMapManager> stp(buf_ptr, buffer_size,
                                                           values_extern_);
-     const RawPointer p = hash_.Get(stp);
+     const RawPointer<> p = hash_.Get(stp);
 
      if (!p.IsEmpty()) {
        // found the same value again, minimize
@@ -245,7 +246,7 @@ class JsonValueStore final : public IValueStoreWriter {
                                 full_buf_size);
      values_buffer_size_ += full_buf_size;
 
-     hash_.Add(RawPointer(pt, stp.GetHashcode(), buffer_size));
+     hash_.Add(RawPointer<>(pt, stp.GetHashcode(), buffer_size));
 
      return pt;
    }
@@ -272,7 +273,7 @@ class JsonValueStoreReader final: public IValueStoreReader {
 
   JsonValueStoreReader(std::istream& stream,
                        boost::interprocess::file_mapping* file_mapping,
-                       bool load_lazy = false)
+                       loading_strategy_types loading_strategy = loading_strategy_types::lazy)
       : IValueStoreReader(stream, file_mapping) {
     TRACE("JsonValueStoreReader construct");
 
@@ -290,24 +291,15 @@ class JsonValueStoreReader final: public IValueStoreReader {
       }
     }
 
-    boost::interprocess::map_options_t map_options = boost::interprocess::default_map_options;
-
-#ifdef MAP_HUGETLB
-    map_options |= MAP_HUGETLB;
-#endif
-
-    if (!load_lazy) {
-#ifdef MAP_POPULATE
-      map_options |= MAP_POPULATE;
-#endif
-    }
+    const boost::interprocess::map_options_t map_options = internal::MemoryMapFlags::ValuesGetMemoryMapOptions(loading_strategy);
 
     strings_region_ = new boost::interprocess::mapped_region(
         *file_mapping, boost::interprocess::read_only, offset,
         strings_size, 0, map_options);
 
-    // prevent pre-fetching pages by the OS which does not make sense as values usually fit into few pages
-    strings_region_->advise(boost::interprocess::mapped_region::advice_types::advice_random);
+    const auto advise = internal::MemoryMapFlags::ValuesGetMemoryMapAdvices(loading_strategy);
+
+    strings_region_->advise(advise);
 
     strings_ = (const char*) strings_region_->get_address();
   }
