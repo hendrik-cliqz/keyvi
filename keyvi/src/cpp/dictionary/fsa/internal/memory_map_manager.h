@@ -171,14 +171,20 @@ final {
       } else if (number_of_chunks_ == 0) {
         return;
       }else {
-        // write all but the last
-        for (size_t i = 0; i< number_of_chunks_ - 1; ++i){
-          char *ptr = (char*) mappings_[i].region_->get_address();
-          stream.write (ptr, chunk_size_);
+        size_t remaining = end;
+        int chunk = 0;
+
+        while (remaining > 0) {
+          size_t bytes_in_chunk = std::min(chunk_size_, remaining);
+          TRACE("write chunk %d, with size: %ld, remaining: %ld", i, bytes_in_chunk, remaining);
+
+          char *ptr = (char*) mappings_[chunk].region_->get_address();
+                    stream.write (ptr, bytes_in_chunk);
+
+          remaining -= bytes_in_chunk;
+          ++chunk;
         }
-        char *ptr = (char*) mappings_[number_of_chunks_ - 1].region_->get_address();
-          stream.write (ptr, end - ((number_of_chunks_ - 1) * chunk_size_));
-        }
+      }
     }
 
    size_t GetSize() const {
@@ -235,6 +241,7 @@ final {
     }
 
     void CreateMapping() {
+      TRACE("create new mapping %d", number_of_chunks_ + 1);
       mapping new_mapping;
 
       boost::filesystem::path filename = GetFilenameForChunk(number_of_chunks_);
@@ -254,6 +261,9 @@ final {
 
       new_mapping.region_ = new boost::interprocess::mapped_region(
           *new_mapping.mapping_, boost::interprocess::read_write);
+
+      // prevent pre-fetching pages by the OS which does not make sense as values usually fit into few pages
+      new_mapping.region_->advise(boost::interprocess::mapped_region::advice_types::advice_random);
 
       mappings_.push_back(new_mapping);
       ++number_of_chunks_;
