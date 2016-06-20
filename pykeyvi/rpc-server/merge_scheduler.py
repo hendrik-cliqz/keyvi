@@ -51,7 +51,7 @@ def _merge_worker(idx, index_dir="kv-index"):
 
         LOG.info("call finalize_merge, worker {}".format(idx))
         try:
-            c = RPCClient('localhost', 6100)
+            c = RPCClient('localhost', 6101)
             c.call('finalize_merge', job, new_segment)
         except:
             LOG.exception('failed to call finalize')
@@ -158,14 +158,30 @@ class MergeScheduler(RPCServer):
 if __name__ == '__main__':
     index_dir="kv-index"
 
-    pool = multiprocessing.Pool(PROCESSES + 2)
+    workers = {}
 
     for idx in range(0, PROCESSES):
         LOG.info("Start worker {}".format(idx))
-        pool.apply_async(_merge_worker, args=(idx, index_dir))
+
+        worker = multiprocessing.Process(target=_merge_worker,
+                                    args=(idx, index_dir))
+        worker.start()
+        workers[idx] = worker
 
     m = MergeScheduler(index_dir)
 
-    server = StreamServer(('127.0.0.1', 6100), m)
-    server.serve_forever()
+    server = StreamServer(('127.0.0.1', 6101), m)
+    server.start()
+    while True: #self.alive:
+        #self.notify()
+        gevent.sleep(1.0)
+        for idx, worker in workers.iteritems():
+            if not worker.is_alive():
+                print "respawn"
+                worker.join()
+                print "{}".format(worker.exitcode)
+                new_worker = multiprocessing.Process(target=_merge_worker,
+                                    args=(idx, index_dir))
+                new_worker.start()
+                workers[idx] = new_worker
 

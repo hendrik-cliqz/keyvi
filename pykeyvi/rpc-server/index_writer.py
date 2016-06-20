@@ -15,11 +15,6 @@ from mprpc import RPCServer
 from mprpc import RPCClient
 from gevent.server import StreamServer
 
-MERGER_PROCESSES = 2
-
-# Queue we put the compilation tasks into
-MERGER_QUEUE = multiprocessing.JoinableQueue(2 * MERGER_PROCESSES)
-
 def _create_logger():
     def setup_logger(log):
         log.setLevel(logging.INFO)
@@ -36,6 +31,18 @@ def _create_logger():
     return log
 
 LOG = _create_logger()
+
+
+MERGER_PROCESSES = 2
+
+# Queue we put the compilation tasks into
+MERGER_QUEUE = multiprocessing.JoinableQueue()
+
+# blocking queue leads to a deadlock, therefore checking ourselves
+MERGER_QUEUE_MAX_SIZE = MERGER_PROCESSES * 3
+
+SEGMENT_WRITE_TRIGGER = 10000
+SEGMENT_WRITE_INTERVAL = 3
 
 def _merge_worker(idx, index_dir="kv-index"):
     LOG.info("Merge Worker {} started".format(idx))
@@ -84,19 +91,30 @@ class IndexFinalizer(gevent.Greenlet):
     def _run(self):
         while True:
             gevent.sleep(self._delay)
-            if self._writer.compiler is not None:
-                self.commit()
+            self.commit()
+            self._writer._find_merges()
 
-    def commit(self):
+    def commit(self, async=False):
+        if self._writer.compiler is None:
+            return
+
         compiler = self._writer.compiler
         self._writer.compiler = None
-        compiler.Compile()
-        filename = os.path.join(self._writer.index_dir, "{}-{}.kv".format(datetime.now(), os.getpid()))
-        compiler.WriteToFile(filename + ".part")
-        os.rename(filename+".part", filename)
-        #c = RPCClient('localhost', 6101)
-        #c.call('register_new_segment', filename)
-        self._writer._register_new_segment(filename)
+
+        # check it again, to be sure
+        if compiler is None:
+            return
+        LOG.info("creating segment")
+
+        def run_compile(compiler):
+            compiler.Compile()
+            filename = os.path.join(self._writer.index_dir, "{}-{}.kv".format(datetime.now(), os.getpid()))
+            compiler.WriteToFile(filename + ".part")
+            os.rename(filename+".part", filename)
+            #c = RPCClient('localhost', 6101)
+            #c.call('register_new_segment', filename)
+            self._writer._register_new_segment(filename)
+        run_compile(compiler)
 
 
 class IndexWriter(RPCServer):
@@ -105,26 +123,54 @@ class IndexWriter(RPCServer):
         self.log = LOG
         self.index_file = os.path.join(index_dir, "index.toc")
         LOG.info('Writer/Merger started')
-        self.compiler = None
         self.segments_in_merger = {}
         self.merger_lock = gevent.lock.RLock()
         self.segments = []
         self.segments_marked_for_merge = []
+        self._load_index_file()
+        self.write_counter = 0
 
-        interval = 10
-        self._finalizer = IndexFinalizer(self, interval)
+        self._finalizer = IndexFinalizer(self, SEGMENT_WRITE_INTERVAL)
         self._finalizer.start()
+
+        self.compiler = None
         super(IndexWriter, self).__init__(pack_params={'use_bin_type': True}, tcp_no_delay=True)
 
+    def _load_index_file(self):
+
+        if not os.path.exists(self.index_file):
+            return
+        toc = '\n'.join(open(self.index_file).readlines())
+        try:
+            toc = json.loads(toc)
+            self.segments = toc.get('files', [])
+            self.log.info("loaded index")
+
+        except Exception, e:
+            self.log.exception("failed to load index")
+            raise
+
+    def _init_lazy_compiler(self):
+        if not self.compiler:
+            self.compiler = pykeyvi.JsonDictionaryCompiler(1024*1024*10)
+            self.write_counter = 0
+
     def _find_merges(self):
+        if (len(self.segments) - len(self.segments_marked_for_merge)) < 2 or MERGER_QUEUE.qsize() >= MERGER_QUEUE_MAX_SIZE:
+            #LOG.info("skip merge, to many items in queue or to few segments")
+            return []
+
         to_merge = []
 
         for segment in self.segments:
             if segment not in self.segments_marked_for_merge:
-                self.log.info('add to merge list: {}'.format(segment))
                 to_merge.append(segment)
 
-        return to_merge
+        if len(to_merge) > 1:
+            with self.merger_lock:
+                self.segments_marked_for_merge.extend(to_merge)
+            self.log.info("Start merge of {} segments".format(len(to_merge)))
+            MERGER_QUEUE.put(to_merge)
 
     def _write_toc(self):
         try:
@@ -146,13 +192,6 @@ class IndexWriter(RPCServer):
 
         # re-write toc to make new segment available
         self._write_toc()
-
-        to_merge = self._find_merges()
-        if len(to_merge) > 1:
-            self.segments_marked_for_merge.extend(to_merge)
-            self.log.info("Put merge list into queue")
-            MERGER_QUEUE.put(to_merge)
-
         return
 
     def ping(self, x):
@@ -193,18 +232,32 @@ class IndexWriter(RPCServer):
         if type(value) == unicode:
             value = value.encode("utf-8")
 
-
-        if self.compiler is None:
-            self.compiler=pykeyvi.JsonDictionaryCompiler()
+        self._init_lazy_compiler()
         self.compiler.Add(key, value)
+        self.write_counter += 1
+
+        if self.write_counter >= SEGMENT_WRITE_TRIGGER:
+            gevent.spawn(self._finalizer.commit)
 
         return
 
-    def set_many(self, key_value_pairs):pass
+    def set_many(self, key_value_pairs):
+        for key, value in key_value_pairs:
+            self.set(key, value)
 
-    def set_many_bulk(self, key_value_pairs):pass
+    def set_many_bulk(self, client_token, key_value_pairs, optimistic=False):
+        for key, value in key_value_pairs:
+            if type(key) == unicode:
+                key = key.encode("utf-8")
+            if type(value) == unicode:
+                value = value.encode("utf-8")
 
-    def commit(self):
+            # todo: use bulk compiler
+            if self.compiler is None:
+                self.compiler=self._init_lazy_compiler()
+            self.compiler.Add(key, value)
+
+    def commit(self, async=True):
         self._finalizer.commit()
 
 
