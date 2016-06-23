@@ -2,20 +2,15 @@
 
 import json
 import logging
-from logging.handlers import RotatingFileHandler
-from datetime import datetime
-import operator
 import os
 import pykeyvi
-from mprpc import RPCClient
-
 from mprpc import RPCServer
 
 class IndexReader(RPCServer):
     def __init__(self, index_dir="kv-index"):
         self.index_dir = index_dir
         self.index_file = os.path.join(index_dir, "index.toc")
-        self.log = self._create_logger()
+        self.log = logging.getLogger("kv-reader")
         self.log.info('Server started')
         self.toc = {}
         self.loaded_dicts = []
@@ -23,20 +18,6 @@ class IndexReader(RPCServer):
         self.last_stat_rs_mtime = 0
         super(IndexReader, self).__init__(pack_params={'use_bin_type': True}, tcp_no_delay=True)
 
-    def _create_logger(self):
-        def setup_logger(log):
-            log.setLevel(logging.INFO)
-            formatter = logging.Formatter(
-                '%(asctime)s - %(name)s(%(process)s) - %(levelname)s - %(message)s')
-            file_name = os.path.join('rpc-server.log')
-            h = RotatingFileHandler(file_name, maxBytes=10 * 1024 * 1024,
-                                    backupCount=5)
-            h.setFormatter(formatter)
-            log.addHandler(h)
-        log = logging.getLogger('kv_logger')
-        setup_logger(log)
-
-        return log
 
     def _load_index_file(self):
         toc = '\n'.join(open(self.index_file).readlines())

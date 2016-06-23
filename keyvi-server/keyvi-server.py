@@ -1,7 +1,8 @@
 from __future__ import unicode_literals
 
+import sys
 import multiprocessing
-
+import logging
 import gunicorn.app.base
 import gunicorn.util
 
@@ -9,12 +10,10 @@ from gunicorn.six import iteritems
 import gevent
 from gevent.server import StreamServer
 
+from cfg import keyvi_server_conf as conf
 import core.index_reader
 import core.index_writer
-
-
-def number_of_workers():
-    return (multiprocessing.cpu_count() * 2) + 1
+import core.kvs_logging
 
 class StandaloneApplication(gunicorn.app.base.BaseApplication):
 
@@ -34,9 +33,10 @@ class StandaloneApplication(gunicorn.app.base.BaseApplication):
 
 
 def start_reader():
+
     options = {
-        'bind': '%s:%s' % ('0.0.0.0', '9100'),
-        'workers': number_of_workers(),
+        'bind': '%s:%s' % (conf.reader_ip, conf.reader_port),
+        'workers': conf.reader_workers,
         'worker_class': 'gunicorn_mprpc.mprpc_gevent_worker.MPRPCGeventWorker'
 
     }
@@ -44,11 +44,11 @@ def start_reader():
     StandaloneApplication(options).run()
 
 if __name__ == '__main__':
-    index_dir = "kv-index"
-    merge_processes = 2
+    index_dir = conf.index_dir
+    merge_processes = conf.merge_processes
 
-
-    #StandaloneApplication(options).run()
+    core.kvs_logging.setup_logging()
+    logger = logging.getLogger('kv-server')
 
     reader = multiprocessing.Process(target=start_reader)
     reader.start()
@@ -56,32 +56,52 @@ if __name__ == '__main__':
     merge_workers = {}
 
     for idx in range(0, merge_processes):
-        #LOG.info("Start merge worker {}".format(idx))
+        logger.info("Start merge worker {}".format(idx))
 
-        worker = multiprocessing.Process(target=core.index_writer._merge_worker,
+        worker = multiprocessing.Process(target=core.index_writer.start_merge_worker,
                                     args=(idx, index_dir))
         worker.start()
         merge_workers[idx] = worker
 
+    writer = multiprocessing.Process(target=core.index_writer.start_writer,
+                                    args=(conf.writer_ip, conf.writer_port, index_dir))
+    writer.start()
 
-    m = core.index_writer.IndexWriter(index_dir)
+    try:
+        while True:
+            gevent.sleep(1.0)
+            for idx, worker in merge_workers.iteritems():
+                if not worker.is_alive():
 
-    server = StreamServer(('127.0.0.1', 6100), m)
-    server.start()
-    while True: #self.alive:
-        #self.notify()
-        gevent.sleep(1.0)
+                    worker.join()
+                    logging.warning("Merge worker died ({}), restarting Merger".format(worker.exitcode))
+                    new_worker = multiprocessing.Process(target=core.index_writer.start_merge_worker,
+                                        args=(idx, index_dir, conf.writer_port))
+                    new_worker.start()
+                    merge_workers[idx] = new_worker
+            if not reader.is_alive():
+                reader.join()
+                logger.warning("Reader master died ({}), restarting Reader".format(reader.exitcode))
+                reader = multiprocessing.Process(target=start_reader)
+                reader.start()
+            if not writer.is_alive():
+                writer.join()
+                logger.warning("Writer died ({}), restarting Writer".format(reader.exitcode))
+                writer = multiprocessing.Process(target=core.index_writer.start_writer,
+                                        args=(conf.writer_ip, conf.writer_port, index_dir))
+                writer.start()
+
+    except KeyboardInterrupt:
+        logger.info('Received ctrl-c, exiting')
         for idx, worker in merge_workers.iteritems():
-            if not worker.is_alive():
-                print "respawn"
-                worker.join()
-                print "{}".format(worker.exitcode)
-                new_worker = multiprocessing.Process(target=core.index_writer._merge_worker,
-                                    args=(idx, index_dir))
-                new_worker.start()
-                merge_workers[idx] = new_worker
-        if not reader.is_alive():
-            print "respawn reader"
-            reader.join()
-            reader = multiprocessing.Process(target=start_reader)
-            reader.start()
+            logging.info("Shutdown merger worker {}".format(idx))
+            worker.terminate()
+            worker.join()
+        logging.info("Shutdown writer")
+        writer.terminate()
+        writer.join()
+        logging.info("Shutdown reader")
+        reader.terminate()
+        reader.join()
+        sys.exit(0)
+

@@ -92,7 +92,7 @@ class IndexFinalizer(gevent.Greenlet):
         while True:
             gevent.sleep(self._delay)
             self.commit()
-            self._writer._find_merges()
+            self._writer.find_merges()
 
     def commit(self, async=False):
         if self._writer.compiler is None:
