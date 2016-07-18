@@ -73,6 +73,11 @@ class EntryIterator final{
     return current_value_;
   }
 
+  bool IsMarkedForDelete() const {
+    return fsa_->IsMarkedForDelete(current_value_);
+  }
+
+
   size_t GetDepth() const {
     return stack_.GetDepth();
   }

@@ -439,6 +439,10 @@ final {
       return value_store_reader_->GetRawValueAsString(state_value);
     }
 
+    bool IsMarkedForDelete(uint64_t state_value) const {
+      return value_store_reader_->IsMarkedForDelete(state_value);
+    }
+
     std::string GetStatistics() const {
       std::ostringstream buf;
       buf << "General" << std::endl;

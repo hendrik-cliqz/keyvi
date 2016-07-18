@@ -35,6 +35,7 @@ enum CompressionCode {
   NO_COMPRESSION = 0,
   ZLIB_COMPRESSION = 1,
   SNAPPY_COMPRESSION = 2,
+  MARKER_FOR_DELETED_KEY_VALUE = 3,
 };
 
 // buffer type which is realloc-able

@@ -146,6 +146,18 @@ class IValueStoreReader {
   virtual std::string GetValueAsString(uint64_t fsa_value) const = 0;
 
   /**
+   * Check if key has a deletion marker.
+   *
+   * A value store must implement the possibility to delete keys.
+   *
+   * @param fsa_value
+   * @return true if key is marked for delete.
+   */
+  virtual bool IsMarkedForDelete (uint64_t fsa_value) {
+    return false;
+  }
+
+  /**
    * Get statistical information about the storage.
    */
 

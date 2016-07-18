@@ -161,6 +161,15 @@ class JsonValueStore final : public IValueStoreWriter {
     return pt;
   }
 
+  uint64_t MarkForDelete() {
+    uint64_t pt = static_cast<uint64_t>(values_buffer_size_);
+    values_extern_->Append(&"\x01\x04", 2);
+
+    values_buffer_size_ += 2;
+    return pt;
+
+  }
+
   uint32_t GetWeightValue(value_t value) const {
     return 0;
   }

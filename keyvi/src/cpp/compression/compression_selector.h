@@ -73,6 +73,9 @@ inline decompress_func_t decompressor_by_code(const std::string& s) {
     case SNAPPY_COMPRESSION:
       TRACE("unpack snappy compressed string");
       return SnappyCompressionStrategy::DoDecompress;
+    case MARKER_FOR_DELETED_KEY_VALUE:
+      TRACE("unpack snappy compressed string");
+      return RawCompressionStrategy::DoDecompress;
     default:
       throw std::invalid_argument("Invalid compression code " +
           boost::lexical_cast<std::string>(static_cast<int>(s[0])));
