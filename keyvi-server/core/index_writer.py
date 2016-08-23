@@ -324,5 +324,21 @@ class IndexWriter(RPCServer):
                 self.compiler=self._init_lazy_compiler()
             self.compiler.Add(key, value)
 
+    def delete(self, key):
+        """
+        delete key
+
+        :param key:
+        :return:
+        """
+
+        for d in reversed(self.loaded_dicts):
+            if key in d:
+                # mark key for delete
+
+                return
+
+        return
+
     def commit(self, async=True):
         self._finalizer.commit(async=async)
