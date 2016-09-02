@@ -10,8 +10,8 @@ from gunicorn.six import iteritems
 import gevent
 
 from cfg import keyvi_server_conf as conf
-import core.index_reader
-import core.index_writer
+import core.index_rpc_reader
+import core.index_rpc_writer
 import core.kvs_logging
 
 
@@ -29,7 +29,7 @@ class StandaloneApplication(gunicorn.app.base.BaseApplication):
             self.cfg.set(key.lower(), value)
 
     def load(self):
-        self.mprpc = core.index_reader.IndexReader
+        self.mprpc = core.index_rpc_reader.IndexRPCReader
         self.mprpc_args = {"index_dir": conf.index_dir, "refresh_interval": conf.reader_refresh}
 
 
@@ -44,7 +44,7 @@ def start_reader():
     StandaloneApplication(options).run()
 
 def create_writer(conf):
-    return multiprocessing.Process(target=core.index_writer.start_writer,
+    return multiprocessing.Process(target=core.index_rpc_writer.start_writer,
                                     args=(conf.writer_ip, conf.writer_port, index_dir,
                                     conf.merge_processes * 2, conf.segment_write_trigger, conf.segment_write_interval))
 
@@ -63,7 +63,7 @@ if __name__ == '__main__':
     for idx in range(0, merge_processes):
         logger.info("Start merge worker {}".format(idx))
 
-        worker = multiprocessing.Process(target=core.index_writer.start_merge_worker,
+        worker = multiprocessing.Process(target=core.index_rpc_writer.start_merge_worker,
                                     args=(idx, index_dir))
         worker.start()
         merge_workers[idx] = worker
@@ -79,7 +79,7 @@ if __name__ == '__main__':
 
                     worker.join()
                     logging.warning("Merge worker died ({}), restarting Merger".format(worker.exitcode))
-                    new_worker = multiprocessing.Process(target=core.index_writer.start_merge_worker,
+                    new_worker = multiprocessing.Process(target=core.index_rpc_writer.start_merge_worker,
                                         args=(idx, index_dir, conf.writer_port))
                     new_worker.start()
                     merge_workers[idx] = new_worker

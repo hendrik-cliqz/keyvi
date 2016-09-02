@@ -5,28 +5,9 @@ import logging
 import os
 import pykeyvi
 import gevent
-import signal
-from gevent.server import StreamServer
-from mprpc import RPCServer
 
 
-
-def start_reader(ip, port, idx, interval):
-    """
-    Starts a simple reader, rather for testing purposes.
-    :param ip: ip to listen to
-    :param port:  port
-    :param idx: indexing directory
-    """
-    # disable CTRL-C for the worker, handle it only in the parent process
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
-    index_reader = IndexReader(idx, interval)
-
-    server = StreamServer((ip, port), index_reader)
-    server.serve_forever()
-
-
-class IndexReader(RPCServer):
+class IndexReader(object):
     class IndexRefresh(gevent.Greenlet):
         def __init__(self, reader, interval=1):
             self._reader = reader
@@ -41,30 +22,39 @@ class IndexReader(RPCServer):
                 except:
                     self._reader.log.exception('Failed to refresh index')
 
-    def __init__(self, index_dir="kv-index", refresh_interval=1):
+    def __init__(self, index_dir="kv-index", refresh_interval=1, logger=None):
         self.index_dir = index_dir
         self.index_file = os.path.join(index_dir, "index.toc")
-        self.log = logging.getLogger("kv-reader")
-        self.log.info('Server started, Index: {}, Refresh: {}'.format(self.index_dir, refresh_interval))
+        if logger:
+            self.log = logger
+        else:
+            self.log = logging.getLogger("kv-reader")
+        self.log.info('Reader started, Index: {}, Refresh: {}'.format(self.index_dir, refresh_interval))
         self.toc = {}
         self.loaded_dicts = []
-        self.compiler = None
         self.last_stat_rs_mtime = 0
 
-        self._refresh = IndexReader.IndexRefresh(self, refresh_interval)
-        self._refresh.start()
+        if refresh_interval > 0:
+            self._refresh = IndexReader.IndexRefresh(self, refresh_interval)
+            self._refresh.start()
 
-        super(IndexReader, self).__init__(pack_params={'use_bin_type': True}, tcp_no_delay=True)
+    def load_index(self):
+        if not os.path.exists(self.index_file):
+            self.log.warning("No Index found")
+            return False
 
-
-    def _load_index_file(self):
-        toc = '\n'.join(open(self.index_file).readlines())
         try:
-            new_toc = json.loads(toc)
-            self.toc = new_toc
-            self.log.info("loaded toc")
+            toc = '\n'.join(open(self.index_file).readlines())
+            toc = json.loads(toc)
+            self.segments = toc.get('files', [])
+            self.log.info("loaded index")
+
         except Exception, e:
-            self.log.exception("failed to load toc")
+            self.log.exception("failed to load index")
+            raise
+
+        return True
+
 
     def check_toc(self):
         try:
@@ -76,7 +66,7 @@ class IndexReader(RPCServer):
         if stat_rs.st_mtime != self.last_stat_rs_mtime:
             self.log.info("reload toc")
             self.last_stat_rs_mtime = stat_rs.st_mtime
-            self._load_index_file()
+            self.load_index()
             new_list_of_dicts = []
             self.log.info("loading files")
             files = self.toc.get('files', [])

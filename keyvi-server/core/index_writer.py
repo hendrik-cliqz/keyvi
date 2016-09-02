@@ -1,74 +1,14 @@
 # -*- coding: utf-8 -*-
 
 import os
-import signal
+import threading
+import multiprocessing
 import logging
 import pykeyvi
-from datetime import datetime
 import time
-import multiprocessing
-import gevent
-import gevent.lock
 import json
 from shutil import move
-from mprpc import RPCServer
-from mprpc import RPCClient
-from gevent.server import StreamServer
-
-LOG = logging.getLogger('kv-writer')
-
-# Queue we put the compilation tasks into
-MERGER_QUEUE = multiprocessing.JoinableQueue()
-
-def start_writer(ip, port, idx,  merge_queue=4, segment_write_trigger=10000, segment_write_interval=10):
-    # disable CTRL-C for the worker, handle it only in the parent process
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
-    index_writer = IndexWriter(idx,  merge_queue=merge_queue,
-                               segment_write_trigger=segment_write_trigger,
-                               segment_write_interval=segment_write_interval)
-
-    server = StreamServer((ip, port), index_writer)
-    server.serve_forever()
-
-def start_merge_worker(idx, index_dir="kv-index", writer_port=6101):
-    # disable CTRL-C for the worker, handle it only in the parent process
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
-    LOG.info("Merge Worker {} started".format(idx))
-
-    while True:
-        job = MERGER_QUEUE.get()
-        try:
-            new_segment = _merge(job, index_dir)
-        except:
-            LOG.exception("Merge failed, worker {}".format(idx))
-            raise
-
-        LOG.info("call finalize_merge, worker {}".format(idx))
-        try:
-            c = RPCClient('localhost', writer_port)
-            c.call('finalize_merge', job, new_segment)
-        except:
-            LOG.exception('failed to call finalize')
-
-        LOG.info("ready for next merge, worker {}".format(idx))
-
-def _merge(list_to_merge, index_dir):
-
-    LOG.info("start merge")
-    merger = pykeyvi.JsonDictionaryMerger()
-    for f in list_to_merge:
-        if type(f) == unicode:
-            f = f.encode("utf-8")
-
-        LOG.info('add to merger: {}'.format(f))
-        merger.Add(f)
-
-    filename = _get_segment_name(index_dir)
-
-    merger.Merge(filename)
-    LOG.info("finished merge")
-
-    return filename
+import index_reader
 
 def _get_segment_name(index_dir, prefix='master'):
     filename = os.path.join(index_dir, "{}-{}-{}.kv".format(prefix, int(time.time() * 1000000), os.getpid()))
@@ -76,22 +16,46 @@ def _get_segment_name(index_dir, prefix='master'):
         filename = filename.encode("utf-8")
     return filename
 
-class IndexWriter(RPCServer):
 
-    class IndexFinalizer(gevent.Greenlet):
-        def __init__(self, writer, interval=1):
+def _merge(merge_job):
+    merger = pykeyvi.JsonDictionaryMerger()
+    for f in merge_job.merge_list:
+        # todo: fix in pykeyvi
+        if type(f) == unicode:
+            f = f.encode("utf-8")
+        merger.Add(f)
+
+    merger.Merge(merge_job.merge_file)
+    return
+
+class MergeJob(object):
+    def __init__(self, process=None, start_time=0, merge_list=[], merge_file=None, merge_completed=False):
+        self.process = process
+        self.start_time = start_time
+        self.merge_list = merge_list
+        self.merge_file = merge_file
+        self.merge_completed = merge_completed
+
+class IndexWriter(index_reader.IndexReader):
+    class IndexerThread(threading.Thread):
+        def __init__(self, writer, logger, commit_interval=1):
             self._writer = writer
-            self._delay = interval
+            self.commit_interval = commit_interval
+            self._delay = self.commit_interval
             self.last_commit = 0
-            self.sem_compiler = gevent.lock.BoundedSemaphore(5)
-            super(IndexWriter.IndexFinalizer, self).__init__()
+            self.max_parallel_merges = 2
+            self.log = logger
+            self.merge_processes = []
+            self.log.info("Index Thread started")
+            super(IndexWriter.IndexerThread, self).__init__()
 
-        def _run(self):
+        def run(self):
             sleep_time = self._delay
             while True:
-                gevent.sleep(sleep_time)
+                time.sleep(sleep_time)
+                self._finalize_merge()
+                self._run_merge()
                 sleep_time = self._commit_checked()
-                self._writer.find_merges()
 
         def _commit_checked(self):
             now = time.time()
@@ -101,8 +65,42 @@ class IndexWriter(RPCServer):
             else:
                 return now - self.last_commit
 
+        def _finalize_merge(self):
+            any_merge_finalized = False
 
-        def commit(self, async=True):
+            for merge_job in self.merge_processes:
+                if not merge_job.process.is_alive():
+                    self._writer._finalize_merge(merge_job)
+                    any_merge_finalized = True
+                    merge_job.merge_completed = True
+                    merge_job.process.join()
+
+            if any_merge_finalized:
+                self.merge_processes[:] = [m for m in self.merge_processes if not m.merge_completed]
+
+
+        def _run_merge(self):
+            if len(self.merge_processes) == self.max_parallel_merges:
+                return
+
+            to_merge = self._writer.find_merges()
+
+            if len(to_merge) > 1:
+                self.log.info("Start merge of {} segments".format(len(to_merge)))
+
+                merge_job = MergeJob(start_time=time.time(), merge_list=to_merge,
+                                     merge_file=_get_segment_name(self._writer.index_dir),
+                                     merge_completed=False,
+                                     process=None)
+
+                p = multiprocessing.Process(target=_merge, args=(merge_job, ))
+                merge_job.start_time = time.time()
+                p.start()
+                merge_job.process = p
+
+                self.merge_processes.append(merge_job)
+
+        def compile(self):
             if self._writer.compiler is None:
                 return
 
@@ -112,67 +110,53 @@ class IndexWriter(RPCServer):
             # check it again, to be sure
             if compiler is None:
                 return
-            LOG.info("creating segment")
+            self.log.info("creating segment")
 
-            def run_compile(compiler):
-                if self.sem_compiler.locked():
-                    LOG.warning("To many open compilers")
+            compiler.Compile()
+            filename = _get_segment_name(self._writer.index_dir)
+            compiler.WriteToFile(filename + ".part")
+            os.rename(filename+".part", filename)
 
-                with self.sem_compiler:
-                    compiler.Compile()
-                    filename = _get_segment_name(self._writer.index_dir)
-                    compiler.WriteToFile(filename + ".part")
-                    os.rename(filename+".part", filename)
-
-                    self._writer.register_new_segment(filename)
+            self._writer.register_new_segment(filename)
 
             self.last_commit = time.time()
-            if async:
-                gevent.spawn(run_compile, compiler)
-            else:
-                run_compile(compiler)
 
-    def __init__(self, index_dir="kv-index", merge_queue=4, segment_write_trigger=10000, segment_write_interval=10):
-        self.index_dir = index_dir
-        self.log = LOG
-        self.index_dir = index_dir
-        self.index_file = os.path.join(index_dir, "index.toc")
+        def commit(self, async=True):
+            if async:
+                # todo: implement async
+                self.compile()
+            else:
+                self.compile()
+
+    def __init__(self, index_dir="kv-index", segment_write_interval=10, segment_write_trigger=10000):
+
+        super(IndexWriter, self).__init__(index_dir, refresh_interval=0,
+                                          logger=logging.getLogger("kv-writer"))
         self.log.info('Writer started')
+
         self.segments_in_merger = {}
-        self.merger_lock = gevent.lock.RLock()
         self.segments = []
         self.segments_marked_for_merge = []
-        self._load_index_file()
-        self._load_segments()
         self.write_counter = 0
+        self.merger_lock = threading.RLock()
 
-        # blocking queue leads to a deadlock, therefore checking ourselves
-        self.merger_queue_max_size = merge_queue
-
+        # todo: lock index (file lock)
         self.segment_write_trigger = segment_write_trigger
+        self.compiler = None
 
-        self._finalizer = IndexWriter.IndexFinalizer(self, segment_write_interval)
+        self.load_or_create_index()
+        self._load_segments()
+
+        self._finalizer = IndexWriter.IndexerThread(self, logger=self.log, commit_interval=segment_write_interval)
         self._finalizer.start()
 
-        self.compiler = None
-        super(IndexWriter, self).__init__(pack_params={'use_bin_type': True}, tcp_no_delay=True)
 
-    def _load_index_file(self):
-
-        if not os.path.exists(self.index_file):
+    def load_or_create_index(self):
+        if not self.load_index():
+            self.log.info('No index found, creating it.')
             if not os.path.exists(self.index_dir):
                 os.mkdir(self.index_dir)
             self._write_toc()
-            return
-        toc = '\n'.join(open(self.index_file).readlines())
-        try:
-            toc = json.loads(toc)
-            self.segments = toc.get('files', [])
-            self.log.info("loaded index")
-
-        except Exception, e:
-            self.log.exception("failed to load index")
-            raise
 
     def _init_lazy_compiler(self):
         if not self.compiler:
@@ -180,7 +164,7 @@ class IndexWriter(RPCServer):
             self.write_counter = 0
 
     def find_merges(self):
-        if (len(self.segments) - len(self.segments_marked_for_merge)) < 2 or MERGER_QUEUE.qsize() >= self.merger_queue_max_size:
+        if (len(self.segments) - len(self.segments_marked_for_merge)) < 2:
             #LOG.info("skip merge, to many items in queue or to few segments")
             return []
 
@@ -195,8 +179,9 @@ class IndexWriter(RPCServer):
             if len(to_merge) > 1:
                 self.segments_marked_for_merge.extend(to_merge)
                 to_merge.reverse()
-                self.log.info("Start merge of {} segments".format(len(to_merge)))
-                MERGER_QUEUE.put(to_merge)
+
+        return to_merge
+
 
     def _write_toc(self):
         try:
@@ -231,11 +216,19 @@ class IndexWriter(RPCServer):
         self._write_toc()
         return
 
-    def ping(self, x):
-        return "HELLO " + x
-
-    def finalize_merge(self, job, new_segment):
+    def _finalize_merge(self, merge_job):
         self.log.info("finalize_merge called")
+        if merge_job.process.exitcode != 0:
+            self.log.warning("merge failed, recover: put merge list back")
+            # remove from marker list
+            with self.merger_lock:
+                for item in merge_job.merge_list:
+                    self.segments_marked_for_merge.remove(item)
+
+            # todo: should merger run with lower load next time???
+
+            return
+
         try:
             self.log.info("finalize merge, put it into the index")
             new_segments = []
@@ -243,11 +236,11 @@ class IndexWriter(RPCServer):
             merged = False
             with self.merger_lock:
                 for s,d in zip(self.segments, self.loaded_dicts):
-                    if s in job:
+                    if s in merge_job.merge_list:
                         if not merged:
                             # found the place where merged segment should go in
-                            new_segments.append(new_segment)
-                            new_loaded_dicts.append(pykeyvi.Dictionary(new_segment))
+                            new_segments.append(merge_job.merge_file)
+                            new_loaded_dicts.append(pykeyvi.Dictionary(merge_job.merge_file))
                             merged = True
                     else:
                         new_segments.append(s)
@@ -259,21 +252,18 @@ class IndexWriter(RPCServer):
                 self.loaded_dicts = new_loaded_dicts
 
                 # remove from marker list
-                for item in job:
+                for item in merge_job.merge_list:
                     self.segments_marked_for_merge.remove(item)
 
             self._write_toc()
 
             # delete old files
-            for f in job:
+            for f in merge_job.merge_list:
                 os.remove(f)
 
         except:
             self.log.exception("Failed to finalize index")
             raise
-
-        return "SUCCESS"
-
 
     def set(self, key, value):
         if key is None:
