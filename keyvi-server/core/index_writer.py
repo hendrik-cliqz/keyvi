@@ -41,29 +41,29 @@ class IndexWriter(index_reader.IndexReader):
         def __init__(self, writer, logger, commit_interval=1):
             self._writer = writer
             self.commit_interval = commit_interval
-            self._delay = self.commit_interval
+            self._delay = 1
             self.last_commit = 0
             self.max_parallel_merges = 2
             self.log = logger
             self.merge_processes = []
-            self.log.info("Index Thread started")
+            self.log.info("Index Thread started, Commit interval set to {} seconds".format(self.commit_interval))
+            self.run_commit = False
+            self.compile_semaphore = threading.BoundedSemaphore(5)
+            self._stop_event = threading.Event()
             super(IndexWriter.IndexerThread, self).__init__()
 
         def run(self):
-            sleep_time = self._delay
-            while True:
-                time.sleep(sleep_time)
+            while not self._stop_event.isSet():
+                time.sleep(self._delay)
                 self._finalize_merge()
                 self._run_merge()
-                sleep_time = self._commit_checked()
+                now = time.time()
 
-        def _commit_checked(self):
-            now = time.time()
-            if now - self.last_commit >= self._delay:
-                self.commit()
-                return self._delay
-            else:
-                return now - self.last_commit
+                if self.run_commit or (int (now - self.last_commit) >= self.commit_interval):
+                    self.log.info("Last commit: {} {} {} {}".format(self.last_commit, now - self.last_commit, self.commit_interval, self.run_commit))
+                    self.run_commit = False
+                    self.last_commit = time.time()
+                    self.compile()
 
         def _finalize_merge(self):
             any_merge_finalized = False
@@ -104,31 +104,42 @@ class IndexWriter(index_reader.IndexReader):
             if self._writer.compiler is None:
                 return
 
-            compiler = self._writer.compiler
-            self._writer.compiler = None
+            # todo: check if run out of compilers
 
-            # check it again, to be sure
-            if compiler is None:
-                return
-            self.log.info("creating segment")
+            with self.compile_semaphore:
 
-            compiler.Compile()
-            filename = _get_segment_name(self._writer.index_dir)
-            compiler.WriteToFile(filename + ".part")
-            os.rename(filename+".part", filename)
+                compiler = self._writer.compiler
+                self._writer.compiler = None
+
+                # check it again, to be sure
+                if compiler is None:
+                    return
+                self.log.info("creating segment")
+
+                compiler.Compile()
+                filename = _get_segment_name(self._writer.index_dir)
+                compiler.WriteToFile(filename + ".part")
+                os.rename(filename+".part", filename)
+
+                # free up resource
+                del compiler
 
             self._writer.register_new_segment(filename)
 
-            self.last_commit = time.time()
 
         def commit(self, async=True):
             if async:
-                # todo: implement async
-                self.compile()
+                self.run_commit = True
             else:
                 self.compile()
+                self.last_commit = time.time()
 
-    def __init__(self, index_dir="kv-index", segment_write_interval=10, segment_write_trigger=10000):
+        def shutdown(self):
+            self._stop_event.set()
+            self.log.info('shutdown IndexThread')
+            self.join()
+
+    def __init__(self, index_dir="kv-index", commit_interval=10, segment_write_trigger=10000):
 
         super(IndexWriter, self).__init__(index_dir, refresh_interval=0,
                                           logger=logging.getLogger("kv-writer"))
@@ -137,6 +148,7 @@ class IndexWriter(index_reader.IndexReader):
         self.segments_in_merger = {}
         self.segments = []
         self.segments_marked_for_merge = []
+        self.commit_interval=commit_interval
         self.write_counter = 0
         self.merger_lock = threading.RLock()
 
@@ -147,8 +159,11 @@ class IndexWriter(index_reader.IndexReader):
         self.load_or_create_index()
         self._load_segments()
 
-        self._finalizer = IndexWriter.IndexerThread(self, logger=self.log, commit_interval=segment_write_interval)
+        self._finalizer = IndexWriter.IndexerThread(self, logger=self.log, commit_interval=self.commit_interval)
         self._finalizer.start()
+
+    def __del__(self):
+        self._finalizer.shutdown()
 
 
     def load_or_create_index(self):
@@ -329,6 +344,13 @@ class IndexWriter(index_reader.IndexReader):
                 return
 
         return
+
+    def check(self):
+        if not self._finalizer.is_alive:
+            self.log.warning("IndexerThread not running, restarting")
+            self._finalizer = IndexWriter.IndexerThread(self, logger=self.log, commit_interval=self.commit_interval)
+            self._finalizer.start()
+
 
     def commit(self, async=True):
         self._finalizer.commit(async=async)
