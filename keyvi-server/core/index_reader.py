@@ -7,6 +7,16 @@ import pykeyvi
 import gevent
 
 
+class ReadOnlySegment(object):
+    def __init__(self, file_name, load=True):
+        self.file_name = file_name
+        self.d = pykeyvi.Dictionary(file_name)
+        self.deleted_keys = []
+
+    def load(self):
+        self.d = pykeyvi.Dictionary(self.file_name)
+
+
 class IndexReader(object):
     class IndexRefresh(gevent.Greenlet):
         def __init__(self, reader, interval=1):

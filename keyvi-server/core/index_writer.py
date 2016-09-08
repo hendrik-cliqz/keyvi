@@ -9,6 +9,7 @@ import time
 import json
 from shutil import move
 import index_reader
+import file_locking
 
 def _get_segment_name(index_dir, prefix='master'):
     filename = os.path.join(index_dir, "{}-{}-{}.kv".format(prefix, int(time.time() * 1000000), os.getpid()))
@@ -35,6 +36,30 @@ class MergeJob(object):
         self.merge_list = merge_list
         self.merge_file = merge_file
         self.merge_completed = merge_completed
+
+class Segment(index_reader.ReadOnlySegment):
+    def __init__(self, file_name, load=False):
+        super(Segment, self).__init__(file_name, load)
+        self.parent_segment = None
+
+    def marked_for_merge(self):
+        return self.parent_segment is not None
+
+    def mark_for_merge(self, parent_segment):
+        self.parent_segment = parent_segment
+
+    def unmark_for_merge(self):
+        """
+        Delete the merge marker, called in case of disaster (merge failure)
+        :return:
+        """
+        self.parent_segment = None
+
+    def delete_key(self, key):
+        if self.parent_segment:
+            self.parent_segment.delete_key(key)
+        else:
+            self.deleted_keys.append(key)
 
 class IndexWriter(index_reader.IndexReader):
     class IndexerThread(threading.Thread):
@@ -83,15 +108,16 @@ class IndexWriter(index_reader.IndexReader):
             if len(self.merge_processes) == self.max_parallel_merges:
                 return
 
-            to_merge = self._writer.find_merges()
+            merge_job = self._writer.find_merges()
 
-            if len(to_merge) > 1:
+            if merge_job is not None:
+            #if len(to_merge) > 1:
                 self.log.info("Start merge of {} segments".format(len(to_merge)))
 
-                merge_job = MergeJob(start_time=time.time(), merge_list=to_merge,
-                                     merge_file=_get_segment_name(self._writer.index_dir),
-                                     merge_completed=False,
-                                     process=None)
+                #merge_job = MergeJob(start_time=time.time(), merge_list=to_merge,
+                #                     merge_file=_get_segment_name(self._writer.index_dir),
+                #                     merge_completed=False,
+                #                     process=None)
 
                 p = multiprocessing.Process(target=_merge, args=(merge_job, ))
                 merge_job.start_time = time.time()
@@ -147,24 +173,32 @@ class IndexWriter(index_reader.IndexReader):
 
         self.segments_in_merger = {}
         self.segments = []
-        self.segments_marked_for_merge = []
+        #self.segments_marked_for_merge = []
         self.commit_interval=commit_interval
         self.write_counter = 0
         self.merger_lock = threading.RLock()
 
-        # todo: lock index (file lock)
         self.segment_write_trigger = segment_write_trigger
         self.compiler = None
 
         self.load_or_create_index()
+
+        # lock the index
+        file_locking.lock(os.path.join(index_dir, 'master.lock'))
+
+
         self._load_segments()
 
         self._finalizer = IndexWriter.IndexerThread(self, logger=self.log, commit_interval=self.commit_interval)
         self._finalizer.start()
 
     def __del__(self):
-        self._finalizer.shutdown()
+        file_locking.unlock(os.path.join(self.index_dir, 'master.lock'))
+        if self._finalizer.is_alive():
+            self._finalizer.shutdown()
 
+    def shutdown(self):
+        self._finalizer.shutdown()
 
     def load_or_create_index(self):
         if not self.load_index():
@@ -173,29 +207,61 @@ class IndexWriter(index_reader.IndexReader):
                 os.mkdir(self.index_dir)
             self._write_toc()
 
+    def load_index(self):
+        if not os.path.exists(self.index_file):
+            return False
+
+        try:
+            toc = '\n'.join(open(self.index_file).readlines())
+            toc = json.loads(toc)
+
+            for s in toc.get('files', []):
+                self.segments.append(Segment(s))
+
+            self.log.info("loaded index")
+
+        except Exception, e:
+            self.log.exception("failed to load index")
+            raise
+
+        return True
+
     def _init_lazy_compiler(self):
         if not self.compiler:
             self.compiler = pykeyvi.JsonDictionaryCompiler(1024*1024*10, {"stable_insert": "true"})
             self.write_counter = 0
 
     def find_merges(self):
+
+        # todo: need some new counter
         if (len(self.segments) - len(self.segments_marked_for_merge)) < 2:
             #LOG.info("skip merge, to many items in queue or to few segments")
             return []
 
         to_merge = []
+        merge_job = None
+
         with self.merger_lock:
 
             for segment in list(self.segments):
-                if segment not in self.segments_marked_for_merge:
+                if not segment.marked_for_merge:
+                #if segment not in self.segments_marked_for_merge:
                     self.log.info("add to merge list {}".format(segment))
                     to_merge.append(segment)
 
             if len(to_merge) > 1:
-                self.segments_marked_for_merge.extend(to_merge)
+                new_segment = Segment(_get_segment_name(self._writer.index_dir))
+
+                for segment in to_merge:
+                    segment.mark_for_merge(new_segment)
+
+                #self.segments_marked_for_merge.extend(to_merge)
                 to_merge.reverse()
 
-        return to_merge
+                merge_job = MergeJob(start_time=time.time(), merge_list=to_merge,
+                                     merge_file=_get_segment_name(self._writer.index_dir))
+
+        return merge_job
 
 
     def _write_toc(self):
@@ -238,7 +304,8 @@ class IndexWriter(index_reader.IndexReader):
             # remove from marker list
             with self.merger_lock:
                 for item in merge_job.merge_list:
-                    self.segments_marked_for_merge.remove(item)
+                    item.unmark_for_merge()
+                    #self.segments_marked_for_merge.remove(item)
 
             # todo: should merger run with lower load next time???
 
@@ -254,6 +321,8 @@ class IndexWriter(index_reader.IndexReader):
                     if s in merge_job.merge_list:
                         if not merged:
                             # found the place where merged segment should go in
+
+                            # todo: use Segment structure
                             new_segments.append(merge_job.merge_file)
                             new_loaded_dicts.append(pykeyvi.Dictionary(merge_job.merge_file))
                             merged = True
@@ -267,8 +336,8 @@ class IndexWriter(index_reader.IndexReader):
                 self.loaded_dicts = new_loaded_dicts
 
                 # remove from marker list
-                for item in merge_job.merge_list:
-                    self.segments_marked_for_merge.remove(item)
+                #for item in merge_job.merge_list:
+                #    self.segments_marked_for_merge.remove(item)
 
             self._write_toc()
 
