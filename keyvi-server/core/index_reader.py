@@ -9,9 +9,14 @@ import gevent
 
 class ReadOnlySegment(object):
     def __init__(self, file_name, load=True):
+        # todo: fix in pykeyvi
+        if type(file_name) == unicode:
+            file_name = file_name.encode("utf-8")
         self.file_name = file_name
-        self.d = pykeyvi.Dictionary(file_name)
         self.deleted_keys = []
+        self.d = None
+        if load:
+            self.load()
 
     def load(self):
         self.d = pykeyvi.Dictionary(self.file_name)

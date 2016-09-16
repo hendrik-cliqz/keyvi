@@ -20,13 +20,19 @@ def _get_segment_name(index_dir, prefix='master'):
 
 def _merge(merge_job):
     merger = pykeyvi.JsonDictionaryMerger()
-    for f in merge_job.merge_list:
+    for segment in merge_job.merge_list:
+        f=segment.file_name
         # todo: fix in pykeyvi
         if type(f) == unicode:
             f = f.encode("utf-8")
         merger.Add(f)
 
-    merger.Merge(merge_job.merge_file)
+    outfile = merge_job.merge_file.file_name
+    if type(outfile) == unicode:
+        outfile = outfile.encode("utf-8")
+
+
+    merger.Merge(outfile)
     return
 
 class MergeJob(object):
@@ -112,7 +118,7 @@ class IndexWriter(index_reader.IndexReader):
 
             if merge_job is not None:
             #if len(to_merge) > 1:
-                self.log.info("Start merge of {} segments".format(len(to_merge)))
+                self.log.info("Start merge of {} segments".format(len(merge_job.merge_list)))
 
                 #merge_job = MergeJob(start_time=time.time(), merge_list=to_merge,
                 #                     merge_file=_get_segment_name(self._writer.index_dir),
@@ -173,7 +179,6 @@ class IndexWriter(index_reader.IndexReader):
 
         self.segments_in_merger = {}
         self.segments = []
-        #self.segments_marked_for_merge = []
         self.commit_interval=commit_interval
         self.write_counter = 0
         self.merger_lock = threading.RLock()
@@ -184,16 +189,14 @@ class IndexWriter(index_reader.IndexReader):
         self.load_or_create_index()
 
         # lock the index
-        file_locking.lock(os.path.join(index_dir, 'master.lock'))
-
-
-        self._load_segments()
+        self.lockfile = open(os.path.join(index_dir, 'master.lock'), 'w')
+        file_locking.lock(self.lockfile, file_locking.LOCK_EX)
 
         self._finalizer = IndexWriter.IndexerThread(self, logger=self.log, commit_interval=self.commit_interval)
         self._finalizer.start()
 
     def __del__(self):
-        file_locking.unlock(os.path.join(self.index_dir, 'master.lock'))
+        file_locking.unlock(self.lockfile)
         if self._finalizer.is_alive():
             self._finalizer.shutdown()
 
@@ -232,11 +235,12 @@ class IndexWriter(index_reader.IndexReader):
             self.write_counter = 0
 
     def find_merges(self):
+        self.log.info("find merges")
 
         # todo: need some new counter
-        if (len(self.segments) - len(self.segments_marked_for_merge)) < 2:
+        #if (len(self.segments) - len(self.segments_marked_for_merge)) < 2:
             #LOG.info("skip merge, to many items in queue or to few segments")
-            return []
+        #    return []
 
         to_merge = []
         merge_job = None
@@ -244,13 +248,16 @@ class IndexWriter(index_reader.IndexReader):
         with self.merger_lock:
 
             for segment in list(self.segments):
-                if not segment.marked_for_merge:
+                #print segment
+                #print segment.marked_for_merge
+
+                if not segment.marked_for_merge():
                 #if segment not in self.segments_marked_for_merge:
                     self.log.info("add to merge list {}".format(segment))
                     to_merge.append(segment)
 
             if len(to_merge) > 1:
-                new_segment = Segment(_get_segment_name(self._writer.index_dir))
+                new_segment = Segment(_get_segment_name(self.index_dir))
 
                 for segment in to_merge:
                     segment.mark_for_merge(new_segment)
@@ -259,7 +266,7 @@ class IndexWriter(index_reader.IndexReader):
                 to_merge.reverse()
 
                 merge_job = MergeJob(start_time=time.time(), merge_list=to_merge,
-                                     merge_file=_get_segment_name(self._writer.index_dir))
+                                     merge_file=new_segment)
 
         return merge_job
 
@@ -268,7 +275,8 @@ class IndexWriter(index_reader.IndexReader):
         try:
             with self.merger_lock:
                 self.log.info("write new TOC")
-                toc = json.dumps({"files": self.segments})
+                files = [s.file_name for s in self.segments]
+                toc = json.dumps({"files": files})
                 fd = open("index.toc.new", "w")
                 fd.write(toc)
                 fd.close()
@@ -277,22 +285,12 @@ class IndexWriter(index_reader.IndexReader):
             self.log.exception("failed to write toc")
             raise
 
-    def _load_segments(self):
-        ld = []
-        for f in self.segments:
-            filename = f.encode("utf-8")
-            self.log.info("Loading: @@@{}@@@".format(filename))
-            ld.append(pykeyvi.Dictionary(filename))
-            self.log.info("load dictionary {}".format(filename))
-        self.loaded_dicts = ld
-
     def register_new_segment(self, new_segment):
         # add new segment
         with self.merger_lock:
             self.log.info("add {}".format(new_segment))
 
-            self.segments.append(new_segment)
-            self.loaded_dicts.append(pykeyvi.Dictionary(new_segment))
+            self.segments.append(Segment(new_segment, True))
         # re-write toc to make new segment available
         self._write_toc()
         return
@@ -305,7 +303,6 @@ class IndexWriter(index_reader.IndexReader):
             with self.merger_lock:
                 for item in merge_job.merge_list:
                     item.unmark_for_merge()
-                    #self.segments_marked_for_merge.remove(item)
 
             # todo: should merger run with lower load next time???
 
@@ -317,33 +314,26 @@ class IndexWriter(index_reader.IndexReader):
             new_loaded_dicts = []
             merged = False
             with self.merger_lock:
-                for s,d in zip(self.segments, self.loaded_dicts):
+                for s in self.segments:
                     if s in merge_job.merge_list:
                         if not merged:
                             # found the place where merged segment should go in
 
                             # todo: use Segment structure
                             new_segments.append(merge_job.merge_file)
-                            new_loaded_dicts.append(pykeyvi.Dictionary(merge_job.merge_file))
                             merged = True
                     else:
                         new_segments.append(s)
-                        new_loaded_dicts.append(d)
 
 
                 self.log.info("Segments: {}".format(new_segments))
                 self.segments = new_segments
-                self.loaded_dicts = new_loaded_dicts
-
-                # remove from marker list
-                #for item in merge_job.merge_list:
-                #    self.segments_marked_for_merge.remove(item)
 
             self._write_toc()
 
             # delete old files
             for f in merge_job.merge_list:
-                os.remove(f)
+                os.remove(f.file_name)
 
         except:
             self.log.exception("Failed to finalize index")
@@ -370,9 +360,9 @@ class IndexWriter(index_reader.IndexReader):
         :param value:
         :return:
         """
-        for d in reversed(self.loaded_dicts):
-            if key in d:
-                return
+        #for d in reversed(self.loaded_dicts):
+        #    if key in d:
+        #        return
         self.set(key, value)
         return
 
@@ -406,11 +396,11 @@ class IndexWriter(index_reader.IndexReader):
         :return:
         """
 
-        for d in reversed(self.loaded_dicts):
-            if key in d:
+        #for d in reversed(self.loaded_dicts):
+        #    if key in d:
                 # mark key for delete
 
-                return
+         #       return
 
         return
 
