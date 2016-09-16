@@ -27,7 +27,7 @@ def _merge(merge_job):
             f = f.encode("utf-8")
         merger.Add(f)
 
-    outfile = merge_job.merge_file.file_name
+    outfile = merge_job.new_segment.file_name
     if type(outfile) == unicode:
         outfile = outfile.encode("utf-8")
 
@@ -36,11 +36,11 @@ def _merge(merge_job):
     return
 
 class MergeJob(object):
-    def __init__(self, process=None, start_time=0, merge_list=[], merge_file=None, merge_completed=False):
+    def __init__(self, process=None, start_time=0, merge_list=[], new_segment=None, merge_completed=False):
         self.process = process
         self.start_time = start_time
         self.merge_list = merge_list
-        self.merge_file = merge_file
+        self.new_segment = new_segment
         self.merge_completed = merge_completed
 
 class Segment(index_reader.ReadOnlySegment):
@@ -117,13 +117,7 @@ class IndexWriter(index_reader.IndexReader):
             merge_job = self._writer.find_merges()
 
             if merge_job is not None:
-            #if len(to_merge) > 1:
                 self.log.info("Start merge of {} segments".format(len(merge_job.merge_list)))
-
-                #merge_job = MergeJob(start_time=time.time(), merge_list=to_merge,
-                #                     merge_file=_get_segment_name(self._writer.index_dir),
-                #                     merge_completed=False,
-                #                     process=None)
 
                 p = multiprocessing.Process(target=_merge, args=(merge_job, ))
                 merge_job.start_time = time.time()
@@ -136,8 +130,7 @@ class IndexWriter(index_reader.IndexReader):
             if self._writer.compiler is None:
                 return
 
-            # todo: check if run out of compilers
-
+            # limit number of compilers
             with self.compile_semaphore:
 
                 compiler = self._writer.compiler
@@ -237,10 +230,9 @@ class IndexWriter(index_reader.IndexReader):
     def find_merges(self):
         self.log.info("find merges")
 
-        # todo: need some new counter
-        #if (len(self.segments) - len(self.segments_marked_for_merge)) < 2:
-            #LOG.info("skip merge, to many items in queue or to few segments")
-        #    return []
+        # todo: need some new counter for the segments in merge
+        if len(self.segments) <= 1:
+            return
 
         to_merge = []
         merge_job = None
@@ -248,11 +240,7 @@ class IndexWriter(index_reader.IndexReader):
         with self.merger_lock:
 
             for segment in list(self.segments):
-                #print segment
-                #print segment.marked_for_merge
-
                 if not segment.marked_for_merge():
-                #if segment not in self.segments_marked_for_merge:
                     self.log.info("add to merge list {}".format(segment))
                     to_merge.append(segment)
 
@@ -262,11 +250,10 @@ class IndexWriter(index_reader.IndexReader):
                 for segment in to_merge:
                     segment.mark_for_merge(new_segment)
 
-                #self.segments_marked_for_merge.extend(to_merge)
                 to_merge.reverse()
 
                 merge_job = MergeJob(start_time=time.time(), merge_list=to_merge,
-                                     merge_file=new_segment)
+                                     new_segment=new_segment)
 
         return merge_job
 
@@ -311,7 +298,6 @@ class IndexWriter(index_reader.IndexReader):
         try:
             self.log.info("finalize merge, put it into the index")
             new_segments = []
-            new_loaded_dicts = []
             merged = False
             with self.merger_lock:
                 for s in self.segments:
@@ -320,7 +306,7 @@ class IndexWriter(index_reader.IndexReader):
                             # found the place where merged segment should go in
 
                             # todo: use Segment structure
-                            new_segments.append(merge_job.merge_file)
+                            new_segments.append(merge_job.new_segment)
                             merged = True
                     else:
                         new_segments.append(s)
@@ -396,11 +382,7 @@ class IndexWriter(index_reader.IndexReader):
         :return:
         """
 
-        #for d in reversed(self.loaded_dicts):
-        #    if key in d:
-                # mark key for delete
-
-         #       return
+        raise Exception("NotImplementedYet")
 
         return
 
