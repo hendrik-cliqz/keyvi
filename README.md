@@ -53,7 +53,7 @@ For the python extension pykeyvi check the [pykeyvi Readme](https://github.com/c
   
   * [Construction Basics](@ref construction_basics)
   * [Persistence Basics](@ref persistence)
-  * [Minimization](@ref minimization)
+  * [Minimization](@ref md_doc_algorithm_Minimization)
   * [Scaling](@ref scaling_of_construction)
   * [Extensibility](@ref extensibility)
 
