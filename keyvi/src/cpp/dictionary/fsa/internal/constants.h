@@ -25,6 +25,19 @@
 #ifndef CONSTANTS_H_
 #define CONSTANTS_H_
 
+// file format definitions
+
+// file magic
+#define KEYVI_FILE_MAGIC "KEYVIFSA"
+#define KEYVI_FILE_MAGIC_LEN 8
+
+// min version of the file
+static const int KEYVI_FILE_VERSION_MIN = 1;
+
+// min version of the persistence part
+static const int KEYVI_FILE_PERSISTENCE_VERSION_MIN = 1;
+
+
 #define NUMBER_OF_STATE_CODINGS 255
 #define FINAL_OFFSET_TRANSITION 256
 #define FINAL_OFFSET_CODE 1
@@ -46,13 +59,14 @@
 
 // Value option key names
 
-#define TEMPORARY_PATH_KEY "temporary_path"
-#define COMPRESSION_KEY "compression"
-#define COMPRESSION_THRESHOLD_KEY "compression_threshold"
-#define MINIMIZATION_KEY "minimization"
-#define SINGLE_PRECISION_FLOAT_KEY "floating_point_precision"
-#define STABLE_INSERTS "stable_insert"
-
+static const std::string TEMPORARY_PATH_KEY = "temporary_path";
+static const std::string COMPRESSION_KEY = "compression";
+static const std::string COMPRESSION_THRESHOLD_KEY = "compression_threshold";
+static const std::string MINIMIZATION_KEY = "minimization";
+static const std::string SINGLE_PRECISION_FLOAT_KEY = "floating_point_precision";
+static const std::string STABLE_INSERTS = "stable_insert";
+static const std::string MERGE_MODE = "merge_mode";
+static const std::string MERGE_APPEND = "append";
 
 /**
  * Lookup table to find outgoing transitions quickly(in parallel) by xor'ing the real buffer with this table.
