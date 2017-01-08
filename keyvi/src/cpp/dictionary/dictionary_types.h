@@ -49,6 +49,10 @@ typedef keyvi::dictionary::DictionaryCompiler<
     keyvi::dictionary::fsa::internal::IntValueStore> IntDictionaryCompiler;
 
 typedef keyvi::dictionary::DictionaryCompiler<
+    keyvi::dictionary::fsa::internal::SparseArrayPersistence<>,
+    keyvi::dictionary::fsa::internal::IntValueStore> IntDictionaryCompiler;
+
+typedef keyvi::dictionary::DictionaryCompiler<
     keyvi::dictionary::fsa::internal::SparseArrayPersistence<>> KeyOnlyDictionaryCompiler;
 
 typedef keyvi::dictionary::DictionaryCompiler<
