@@ -123,6 +123,9 @@ class DictionaryCompiler final {
     // ensure backwards compatibility: put memory limit into parameters
     params_[MEMORY_LIMIT_KEY] = std::to_string(memory_limit);
 
+        // ensure backwards compatibility: put memory limit into parameters
+        params_[MEMORY_LIMIT_KEY] = std::to_string(memory_limit);
+
     value_store_ = new ValueStoreT(params_);
   }
 #endif

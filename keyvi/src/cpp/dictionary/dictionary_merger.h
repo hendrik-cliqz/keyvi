@@ -127,6 +127,26 @@ class DictionaryMerger final {
   }
 #endif
 
+#ifndef KEYVI_DEPRECATED
+    /**
+     * DEPRECATED
+     */
+    DictionaryMerger(size_t memory_limit, const merger_param_t& params = merger_param_t())
+            : dicts_to_merge_(),
+              params_(params)
+    {
+        if (params_.count(TEMPORARY_PATH_KEY) == 0) {
+            params_[TEMPORARY_PATH_KEY] = boost::filesystem::temp_directory_path().string();
+        }
+        if (params_.count(MERGE_MODE) > 0) {
+            append_merge_ = MERGE_APPEND == params_[MERGE_MODE];
+        }
+
+        // ensure backwards compatibility: put memory limit into parameters
+        params_[MEMORY_LIMIT_KEY] = std::to_string(memory_limit);
+    }
+#endif
+
   void Add(const std::string& filename) {
     inputFiles_.push_back(filename);
 
