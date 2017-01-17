@@ -1,3 +1,22 @@
+//
+// keyvi - A key value store.
+//
+// Copyright 2015 Hendrik Muhs<hendrik.muhs@gmail.com>
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+
+
 /*
  * index_reader.h
  *
@@ -9,8 +28,11 @@
 #define KEYVI_INDEX_INDEX_READER_H_
 
 #include <algorithm>
+#include <atomic>
 #include <ctime>
+#include <thread>
 #include <vector>
+#include <chrono>
 
 #include <boost/filesystem/operations.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -28,26 +50,16 @@ namespace keyvi {
 namespace index {
 
 class IndexReader final {
-	/*
-	 * Thread to refresh/reload the index.
-	 *
-	 */
-	class IndexReaderRefresh {
-
-	};
 public:
 	IndexReader(const std::string index_directory, size_t refresh_interval = 1 /*, optional external logger*/)
-		:index_toc_(), segments_() {
+		:index_toc_(), segments_(), stop_update_thread_ (true) {
 
 		index_directory_ = index_directory;
 
-		boost::filesystem::path filename(index_directory_);
-		      filename /=
-		index_directory_ = index_directory;
-		index_toc_file_ = index_directory;
+		index_toc_file_ = index_directory_;
 		index_toc_file_ /= "index.toc";
 
-		TRACE ("Reader started");
+		TRACE ("Reader started, index TOC: %s", index_toc_file_.native().c_str());
 
 		last_modification_time_ = 0;
 
@@ -56,8 +68,33 @@ public:
 		            self._refresh = IndexReader.IndexRefresh(self, refresh_interval)
 		            self._refresh.start()
 */
+		ReloadIndex();
 	}
 
+	~IndexReader(){
+		stop_update_thread_ = true;
+		if(update_thread_.joinable()) {
+			update_thread_.join();
+		}
+	}
+
+
+	void StartUpdateWatcher(){
+		if (stop_update_thread_ == false) {
+			// already runs
+			return;
+		}
+
+		stop_update_thread_ = false;
+		update_thread_ = std::thread(&IndexReader::UpdateWatcher,this);
+	}
+
+	void StopUpdateWatcher(){
+		stop_update_thread_ = true;
+		if(update_thread_.joinable()) {
+			update_thread_.join();
+		}
+	}
 
 	dictionary::Match operator[](const std::string&  key) const {
 		dictionary::Match m;
@@ -85,7 +122,9 @@ public:
 		return false;
 	}
 
-	void Reload(){}
+	void Reload(){
+		ReloadIndex();
+	}
 
 private:
 	boost::filesystem::path index_directory_;
@@ -93,28 +132,35 @@ private:
 	std::time_t last_modification_time_;
 	boost::property_tree::ptree index_toc_;
 	std::vector<ReadOnlySegment> segments_;
-
+	std::thread update_thread_;
+	std::atomic_bool stop_update_thread_;
 
 	void LoadIndex(){
 		if (!boost::filesystem::exists(index_directory_)) {
 			TRACE ("No index found.");
 			return;
 		}
+		TRACE("read toc");
 
-		std::ifstream toc_fstream(index_toc_file_.string());
+		std::ifstream toc_fstream(index_toc_file_.native());
+
+		TRACE("rereading %s", index_toc_file_.native().c_str());
 
 		if (!toc_fstream.good()) {
 		  throw std::invalid_argument("file not found");
 		}
 
-		// TODO move this method
-		index_toc_ = dictionary::fsa::internal::SerializationUtils::ReadJsonRecord(toc_fstream);
+		TRACE("read toc 2");
+
+		boost::property_tree::read_json(toc_fstream, index_toc_);
+		TRACE("index_toc loaded");
 	}
 
 	void ReloadIndex(){
 		std::time_t t = boost::filesystem::last_write_time( index_toc_file_ ) ;
 
 		if (t <= last_modification_time_) {
+			TRACE("no modifications found");
 			return;
 		}
 
@@ -122,11 +168,15 @@ private:
 		last_modification_time_ = t;
 		LoadIndex();
 
+		TRACE("reading segments");
+
 		std::vector<ReadOnlySegment> new_segments;
 
 		for (boost::property_tree::ptree::value_type &f : index_toc_.get_child("files"))
 		{
-			new_segments.push_back(ReadOnlySegment(f.second.data()));
+			boost::filesystem::path p (index_directory_);
+			p /= f.second.data();
+			new_segments.push_back(ReadOnlySegment(p.native()));
 		}
 
 		// reverse the list
@@ -136,7 +186,17 @@ private:
 		TRACE("Loaded new segments");
 	}
 
+	void UpdateWatcher() {
+		 while(!stop_update_thread_){
 
+			 TRACE("UpdateWatcher: Check for new segments");
+			 // reload
+			 ReloadIndex();
+
+			 // sleep for some time
+		     std::this_thread::sleep_for( std::chrono::seconds(1) );
+		 }
+	}
 
 
 
