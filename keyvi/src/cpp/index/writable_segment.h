@@ -40,7 +40,7 @@ public:
 
 	}
 
-	void MarkMerge(const WritableSegment* parent_segment) {
+	void MarkMerge(WritableSegment* parent_segment) {
 		parent_segment_ = parent_segment;
 	}
 

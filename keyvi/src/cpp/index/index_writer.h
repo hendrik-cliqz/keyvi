@@ -31,18 +31,22 @@
 #include <atomic>
 #include <ctime>
 #include <thread>
+#include <condition_variable>
 #include <vector>
 #include <chrono>
 
+#include <boost/interprocess/sync/file_lock.hpp>
 #include <boost/filesystem/operations.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/json_parser.hpp>
 
 #include "dictionary/dictionary_compiler.h"
 #include "dictionary/dictionary.h"
+#include "dictionary/dictionary_types.h"
 #include "dictionary/match.h"
 #include "dictionary/fsa/internal/serialization_utils.h"
 #include "index/writable_segment.h"
+#include "index/internal/index_finalizer.h"
 
 #define ENABLE_TRACING
 #include "dictionary/util/trace.h"
@@ -53,13 +57,66 @@ namespace index {
 
 class IndexWriter final {
 public:
-	IndexWriter(const std::string index_directory){
+	IndexWriter(const std::string& index_directory):
+		index_finalizer_() {
+
+		index_directory_ = index_directory;
+
+		index_toc_file_ = index_directory_;
+		index_toc_file_ /= "index.toc";
+
+		// lock the index (filesystem lock)
+		boost::filesystem::path index_lock_file = index_directory_;
+		index_lock_file /= "index.lock";
+		//index_lock_ = boost::interprocess::file_lock(index_lock_file.native().c_str());
+		//index_lock_.lock();
+
+
+		/**
+        super(IndexWriter, self).__init__(index_dir, refresh_interval=0,
+                                          logger=logging.getLogger("kv-writer"))
+        self.log.info('Writer started')
+
+        self.segments_in_merger = {}
+        self.segments = []
+        self.commit_interval=commit_interval
+        self.write_counter = 0
+        self.merger_lock = threading.RLock()
+
+        self.segment_write_trigger = segment_write_trigger
+        self.compiler = None
+
+        self.load_or_create_index()
+
+        # lock the index
+        self.lockfile = open(os.path.join(index_dir, 'master.lock'), 'w')
+        file_locking.lock(self.lockfile, file_locking.LOCK_EX)
+
+        self._finalizer = IndexWriter.IndexerThread(self, logger=self.log, commit_interval=self.commit_interval)
+        self._finalizer.start()
+        **/
 
 	}
 
-	~IndexWriter(){}
+	~IndexWriter(){
+		index_lock_.unlock();
+
+	}
+
+	void Set(const std::string& key, const std::string& value){
+		index_finalizer_.GetCompiler()->Add(key, value);
+		index_finalizer_.CheckForCommit();
+	}
+
+	void Delete(){}
+
+	void Flush(){}
 
 private:
+	boost::filesystem::path index_directory_;
+	boost::filesystem::path index_toc_file_;
+	boost::interprocess::file_lock index_lock_;
+	internal::IndexFinalizer index_finalizer_;
 
 };
 
