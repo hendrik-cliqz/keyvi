@@ -22,43 +22,35 @@
  *      Author: hendrik
  */
 
-
-
 #ifndef SRC_CPP_INDEX_WRITABLE_SEGMENT_H_
 #define SRC_CPP_INDEX_WRITABLE_SEGMENT_H_
 
-#include "index/readonly_segment.h"
+#include <string>
 
+#include "index/readonly_segment.h"
 
 namespace keyvi {
 namespace index {
+namespace internal {
 
-class WritableSegment final: ReadOnlySegment {
-public:
-	WritableSegment(const std::string& filename, bool load = false)
-    : ReadOnlySegment(filename, load), parent_segment_(nullptr) {
+class WritableSegment final : public ReadOnlySegment {
+ public:
+  explicit WritableSegment(const std::string& filename, bool load = false)
+      : ReadOnlySegment(filename, load), parent_segment_(nullptr) {}
 
-	}
+  void MarkMerge(WritableSegment* parent_segment) {
+    parent_segment_ = parent_segment;
+  }
 
-	void MarkMerge(WritableSegment* parent_segment) {
-		parent_segment_ = parent_segment;
-	}
+  void UnMarkMerge() { parent_segment_ = nullptr; }
 
-	void UnMarkMerge() {
-		parent_segment_ = nullptr;
-	}
+  bool MarkedForMerge() const { return parent_segment_ != nullptr; }
 
-	bool MarkedForMerge() const {
-		return parent_segment_ != nullptr;
-	}
-
-
-
-private:
+ private:
   WritableSegment* parent_segment_;
 };
 
-
+} /* namespace internal */
 } /* namespace index */
 } /* namespace keyvi */
 /*
@@ -89,6 +81,5 @@ self.deleted_keys.append(key)
 
 
  */
-
 
 #endif /* SRC_CPP_INDEX_WRITABLE_SEGMENT_H_ */

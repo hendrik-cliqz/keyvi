@@ -16,7 +16,6 @@
 // limitations under the License.
 //
 
-
 /*
  * index_reader.h
  *
@@ -29,18 +28,19 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <ctime>
+#include <string>
 #include <thread>
 #include <vector>
-#include <chrono>
 
 #include <boost/filesystem/operations.hpp>
-#include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/json_parser.hpp>
+#include <boost/property_tree/ptree.hpp>
 
 #include "dictionary/dictionary.h"
-#include "dictionary/match.h"
 #include "dictionary/fsa/internal/serialization_utils.h"
+#include "dictionary/match.h"
 #include "index/readonly_segment.h"
 
 #define ENABLE_TRACING
@@ -50,158 +50,148 @@ namespace keyvi {
 namespace index {
 
 class IndexReader final {
-public:
-	IndexReader(const std::string index_directory, size_t refresh_interval = 1 /*, optional external logger*/)
-		:index_toc_(), segments_(), stop_update_thread_ (true) {
+ public:
+  IndexReader(const std::string index_directory,
+              size_t refresh_interval = 1 /*, optional external logger*/)
+      : index_toc_(), segments_(), stop_update_thread_(true) {
+    index_directory_ = index_directory;
 
-		index_directory_ = index_directory;
+    index_toc_file_ = index_directory_;
+    index_toc_file_ /= "index.toc";
 
-		index_toc_file_ = index_directory_;
-		index_toc_file_ /= "index.toc";
+    TRACE("Reader started, index TOC: %s", index_toc_file_.string().c_str());
 
-		TRACE ("Reader started, index TOC: %s", index_toc_file_.native().c_str());
+    last_modification_time_ = 0;
 
-		last_modification_time_ = 0;
+    // TODO: start refresh thread
+    /*		        if refresh_interval > 0:
+                                self._refresh = IndexReader.IndexRefresh(self,
+       refresh_interval)
+                                self._refresh.start()
+    */
+    ReloadIndex();
+  }
 
-		// TODO: start refresh thread
-/*		        if refresh_interval > 0:
-		            self._refresh = IndexReader.IndexRefresh(self, refresh_interval)
-		            self._refresh.start()
-*/
-		ReloadIndex();
-	}
+  ~IndexReader() {
+    stop_update_thread_ = true;
+    if (update_thread_.joinable()) {
+      update_thread_.join();
+    }
+  }
 
-	~IndexReader(){
-		stop_update_thread_ = true;
-		if(update_thread_.joinable()) {
-			update_thread_.join();
-		}
-	}
+  void StartUpdateWatcher() {
+    if (stop_update_thread_ == false) {
+      // already runs
+      return;
+    }
 
+    stop_update_thread_ = false;
+    update_thread_ = std::thread(&IndexReader::UpdateWatcher, this);
+  }
 
-	void StartUpdateWatcher(){
-		if (stop_update_thread_ == false) {
-			// already runs
-			return;
-		}
+  void StopUpdateWatcher() {
+    stop_update_thread_ = true;
+    if (update_thread_.joinable()) {
+      update_thread_.join();
+    }
+  }
 
-		stop_update_thread_ = false;
-		update_thread_ = std::thread(&IndexReader::UpdateWatcher,this);
-	}
+  dictionary::Match operator[](const std::string& key) const {
+    dictionary::Match m;
 
-	void StopUpdateWatcher(){
-		stop_update_thread_ = true;
-		if(update_thread_.joinable()) {
-			update_thread_.join();
-		}
-	}
+    for (auto s : segments_) {
+      m = (*s)->operator[](key);
+      if (!m.IsEmpty()) {
+        return m;
+      }
+    }
 
-	dictionary::Match operator[](const std::string&  key) const {
-		dictionary::Match m;
+    return m;
+  }
 
-		for (auto s: segments_)
-		{
-			m = (*s)->operator[](key);
-			if (!m.IsEmpty()){
-				return m;
-			}
-		}
+  bool Contains(const std::string& key) const {
+    for (auto s : segments_) {
+      if ((*s)->Contains(key)) {
+        return true;
+      }
+    }
 
-		return m;
-	}
+    return false;
+  }
 
-	bool Contains(const std::string& key) const {
+  void Reload() { ReloadIndex(); }
 
-		for (auto s: segments_)
-		{
-			if ((*s)->Contains(key)) {
-				return true;
-			}
-		}
+ private:
+  boost::filesystem::path index_directory_;
+  boost::filesystem::path index_toc_file_;
+  std::time_t last_modification_time_;
+  boost::property_tree::ptree index_toc_;
+  std::vector<ReadOnlySegment> segments_;
+  std::thread update_thread_;
+  std::atomic_bool stop_update_thread_;
 
-		return false;
-	}
+  void LoadIndex() {
+    if (!boost::filesystem::exists(index_directory_)) {
+      TRACE("No index found.");
+      return;
+    }
+    TRACE("read toc");
 
-	void Reload(){
-		ReloadIndex();
-	}
+    std::ifstream toc_fstream(index_toc_file_.string());
 
-private:
-	boost::filesystem::path index_directory_;
-	boost::filesystem::path index_toc_file_;
-	std::time_t last_modification_time_;
-	boost::property_tree::ptree index_toc_;
-	std::vector<ReadOnlySegment> segments_;
-	std::thread update_thread_;
-	std::atomic_bool stop_update_thread_;
+    TRACE("rereading %s", index_toc_file_.string().c_str());
 
-	void LoadIndex(){
-		if (!boost::filesystem::exists(index_directory_)) {
-			TRACE ("No index found.");
-			return;
-		}
-		TRACE("read toc");
+    if (!toc_fstream.good()) {
+      throw std::invalid_argument("file not found");
+    }
 
-		std::ifstream toc_fstream(index_toc_file_.native());
+    TRACE("read toc 2");
 
-		TRACE("rereading %s", index_toc_file_.native().c_str());
+    boost::property_tree::read_json(toc_fstream, index_toc_);
+    TRACE("index_toc loaded");
+  }
 
-		if (!toc_fstream.good()) {
-		  throw std::invalid_argument("file not found");
-		}
+  void ReloadIndex() {
+    std::time_t t = boost::filesystem::last_write_time(index_toc_file_);
 
-		TRACE("read toc 2");
+    if (t <= last_modification_time_) {
+      TRACE("no modifications found");
+      return;
+    }
 
-		boost::property_tree::read_json(toc_fstream, index_toc_);
-		TRACE("index_toc loaded");
-	}
+    TRACE("reload toc");
+    last_modification_time_ = t;
+    LoadIndex();
 
-	void ReloadIndex(){
-		std::time_t t = boost::filesystem::last_write_time( index_toc_file_ ) ;
+    TRACE("reading segments");
 
-		if (t <= last_modification_time_) {
-			TRACE("no modifications found");
-			return;
-		}
+    std::vector<ReadOnlySegment> new_segments;
 
-		TRACE("reload toc");
-		last_modification_time_ = t;
-		LoadIndex();
+    for (boost::property_tree::ptree::value_type& f :
+         index_toc_.get_child("files")) {
+      boost::filesystem::path p(index_directory_);
+      p /= f.second.data();
+      new_segments.push_back(ReadOnlySegment(p.string()));
+    }
 
-		TRACE("reading segments");
+    // reverse the list
+    std::reverse(new_segments.begin(), new_segments.end());
 
-		std::vector<ReadOnlySegment> new_segments;
+    segments_.swap(new_segments);
+    TRACE("Loaded new segments");
+  }
 
-		for (boost::property_tree::ptree::value_type &f : index_toc_.get_child("files"))
-		{
-			boost::filesystem::path p (index_directory_);
-			p /= f.second.data();
-			new_segments.push_back(ReadOnlySegment(p.native()));
-		}
+  void UpdateWatcher() {
+    while (!stop_update_thread_) {
+      TRACE("UpdateWatcher: Check for new segments");
+      // reload
+      ReloadIndex();
 
-		// reverse the list
-		std::reverse(new_segments.begin(), new_segments.end());
-
-		segments_.swap(new_segments);
-		TRACE("Loaded new segments");
-	}
-
-	void UpdateWatcher() {
-		 while(!stop_update_thread_){
-
-			 TRACE("UpdateWatcher: Check for new segments");
-			 // reload
-			 ReloadIndex();
-
-			 // sleep for some time
-		     std::this_thread::sleep_for( std::chrono::seconds(1) );
-		 }
-	}
-
-
-
+      // sleep for some time
+      std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+  }
 };
-
 
 } /* namespace index */
 } /* namespace keyvi */
@@ -229,7 +219,8 @@ private:
             self.log = logger
         else:
             self.log = logging.getLogger("kv-reader")
-        self.log.info('Reader started, Index: {}, Refresh: {}'.format(self.index_dir, refresh_interval))
+        self.log.info('Reader started, Index: {}, Refresh:
+ {}'.format(self.index_dir, refresh_interval))
         self.toc = {}
         self.loaded_dicts = []
         self.last_stat_rs_mtime = 0
@@ -298,10 +289,8 @@ private:
         return False
 
     def reload(self):
-		self.check_toc()
+                self.check_toc()
 
  */
-
-
 
 #endif /* KEYVI_INDEX_INDEX_READER_H_ */

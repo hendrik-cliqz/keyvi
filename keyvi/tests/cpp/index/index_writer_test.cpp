@@ -16,32 +16,38 @@
 // limitations under the License.
 //
 
-
 /*
  * index_writer_test.cpp
  *
  *  Created on: Jan 13, 2017
  *      Author: hendrik
  */
+
 #include <chrono>
 #include <thread>
 
-#include <boost/test/unit_test.hpp>
 #include <boost/filesystem.hpp>
+#include <boost/test/unit_test.hpp>
 
 #include "index/index_writer.h"
 
 namespace keyvi {
 namespace index {
-BOOST_AUTO_TEST_SUITE( IndexWriterTests )
+BOOST_AUTO_TEST_SUITE(IndexWriterTests)
 
-BOOST_AUTO_TEST_CASE( simple ) {
+BOOST_AUTO_TEST_CASE(simple) {
+  using boost::filesystem::temp_directory_path;
+  using boost::filesystem::unique_path;
 
-	using namespace boost::filesystem;
+  auto tmp_path = temp_directory_path();
+  tmp_path /= unique_path();
+  IndexWriter writer(tmp_path.string());
 
-	auto tmp_path = temp_directory_path();
-	tmp_path /= unique_path();
-	IndexWriter writer(tmp_path.native());
+  writer.Set("a", "{\"id\":3}");
+  std::this_thread::sleep_for(std::chrono::seconds(1));
+  std::this_thread::sleep_for(std::chrono::seconds(1));
+  writer.Set("b", "{\"id\":4}");
+  writer.Flush();
 }
 
 BOOST_AUTO_TEST_SUITE_END()

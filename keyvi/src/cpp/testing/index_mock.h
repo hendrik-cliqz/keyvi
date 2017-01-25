@@ -28,82 +28,74 @@
 
 #include <fstream>
 #include <sstream>
+#include <string>
+#include <utility>
+#include <vector>
 
-#include "dictionary/fsa/automata.h"
 #include "dictionary/compilation/compilation_utils.h"
-
+#include "dictionary/fsa/automata.h"
 
 namespace keyvi {
 namespace testing {
 
 class IndexMock final {
-	public:
+ public:
+  IndexMock() : kv_files_(0) {
+    using boost::filesystem::temp_directory_path;
+    using boost::filesystem::unique_path;
 
+    mock_index_ = temp_directory_path();
+    mock_index_ /= unique_path();
 
-	IndexMock()
-	:kv_files_(0)
-	{
-		using namespace boost::filesystem;
+    create_directories(mock_index_);
+  }
 
-		mock_index_ = temp_directory_path();
-		mock_index_ /= unique_path();
+  void AddSegment(std::vector<std::pair<std::string, std::string>>& input) {
+    using boost::filesystem::path;
 
-		create_directories(mock_index_);
-	}
+    path filename(mock_index_);
+    filename /= "kv-";
+    filename += std::to_string(kv_files_++);
+    filename += ".kv";
 
-	void AddSegment(std::vector<std::pair<std::string, std::string>>& input) {
-		using namespace boost::filesystem;
+    std::string filename_str = filename.string();
 
-		path filename(mock_index_);
-		filename /= "kv-";
-		filename += std::to_string(kv_files_++);
-		filename += ".kv";
+    dictionary::compilation::CompilationUtils::CompileJson(input, filename_str);
 
-		std::string filename_str = filename.native();
+    WriteToc();
+  }
 
-		dictionary::compilation::CompilationUtils::CompileJson(input, filename_str);
+  std::string GetIndexFolder() const { return mock_index_.string(); }
 
-		WriteToc();
-	}
+ private:
+  boost::filesystem::path mock_index_;
+  size_t kv_files_;
 
-	std::string GetIndexFolder() const {
-		return mock_index_.native();
-	}
+  void WriteToc() {
+    boost::filesystem::path toc_file(mock_index_);
+    toc_file /= "index.toc";
 
-	private:
-		boost::filesystem::path mock_index_;
-		size_t kv_files_;
+    std::ofstream toc(toc_file.string());
+    std::stringstream ss;
 
-		void WriteToc(){
-			boost::filesystem::path toc_file (mock_index_);
-			toc_file /= "index.toc";
+    ss << "{\"files\": [";
+    ss << "\"kv-0.kv\"";
 
-			std::ofstream toc(toc_file.native());
-			std::stringstream ss;
+    for (size_t i = 1; i < kv_files_; ++i) {
+      ss << ", ";
+      ss << "\"kv-";
+      ss << std::to_string(i);
+      ss << ".kv\"";
+    }
 
-			ss << "{\"files\": [";
-			ss << "\"kv-0.kv\"";
+    ss << "]}";
 
-			for (size_t i = 1; i < kv_files_; ++i) {
-				ss << ", ";
-				ss << "\"kv-";
-				ss << std::to_string(i);
-				ss << ".kv\"";
-			}
-
-			ss << "]}";
-
-			toc << ss.str();
-			toc.close();
-		}
-
-
-
+    toc << ss.str();
+    toc.close();
+  }
 };
-
 
 } /* namespace testing */
 } /* namespace keyvi */
-
 
 #endif /* KEYVI_TEST_INDEX_INDEX_MOCK_H_ */
