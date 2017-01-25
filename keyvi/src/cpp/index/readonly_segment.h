@@ -25,36 +25,33 @@
 #ifndef KEYVI_INDEX_READONLY_SEGMENT_H_
 #define KEYVI_INDEX_READONLY_SEGMENT_H_
 
-#include<set>
+#include <set>
+#include <string>
 
 #include "dictionary/dictionary.h"
-
 
 namespace keyvi {
 namespace index {
 
 class ReadOnlySegment {
-public:
-	ReadOnlySegment(const std::string& filename, const bool load = true):
-	filename_(filename), deleted_keys_(), dictionary_() {
-		if (load) {
-			Load();
-		}
-	}
+ public:
+  explicit ReadOnlySegment(const std::string& filename, const bool load = true)
+      : filename_(filename), deleted_keys_(), dictionary_() {
+    if (load) {
+      Load();
+    }
+  }
 
-	dictionary::dictionary_t& operator*() {
-		return dictionary_;
-	}
+  dictionary::dictionary_t& operator*() { return dictionary_; }
 
-private:
+  const std::string& GetFilename() const { return filename_; }
+
+ private:
   std::string filename_;
   std::set<std::string> deleted_keys_;
   dictionary::dictionary_t dictionary_;
 
-  void Load() {
-	dictionary_.reset(new dictionary::Dictionary(filename_));
-  }
-
+  void Load() { dictionary_.reset(new dictionary::Dictionary(filename_)); }
 };
 
 } /* namespace index */
@@ -75,7 +72,5 @@ class ReadOnlySegment(object):
     def load(self):
 self.d = pykeyvi.Dictionary(self.file_name)
 */
-
-
 
 #endif /* KEYVI_INDEX_READONLY_SEGMENT_H_ */

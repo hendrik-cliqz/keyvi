@@ -16,7 +16,6 @@
 // limitations under the License.
 //
 
-
 /*
  * index_writer.h
  *
@@ -29,97 +28,103 @@
 
 #include <algorithm>
 #include <atomic>
-#include <ctime>
-#include <thread>
-#include <condition_variable>
-#include <vector>
 #include <chrono>
+#include <condition_variable>
+#include <ctime>
+#include <string>
+#include <thread>
+#include <vector>
 
-#include <boost/interprocess/sync/file_lock.hpp>
 #include <boost/filesystem/operations.hpp>
-#include <boost/property_tree/ptree.hpp>
+#include <boost/interprocess/sync/file_lock.hpp>
 #include <boost/property_tree/json_parser.hpp>
+#include <boost/property_tree/ptree.hpp>
 
-#include "dictionary/dictionary_compiler.h"
 #include "dictionary/dictionary.h"
+#include "dictionary/dictionary_compiler.h"
 #include "dictionary/dictionary_types.h"
-#include "dictionary/match.h"
 #include "dictionary/fsa/internal/serialization_utils.h"
-#include "index/writable_segment.h"
+#include "dictionary/match.h"
 #include "index/internal/index_finalizer.h"
 
 #define ENABLE_TRACING
 #include "dictionary/util/trace.h"
 
-
 namespace keyvi {
 namespace index {
 
 class IndexWriter final {
-public:
-	IndexWriter(const std::string& index_directory):
-		index_finalizer_() {
+ public:
+  explicit IndexWriter(const std::string& index_directory)
+      : index_finalizer_(index_directory) {
+    index_directory_ = index_directory;
 
-		index_directory_ = index_directory;
+    index_toc_file_ = index_directory_;
+    index_toc_file_ /= "index.toc";
 
-		index_toc_file_ = index_directory_;
-		index_toc_file_ /= "index.toc";
+    // lock the index (filesystem lock)
+    boost::filesystem::path index_lock_file = index_directory_;
 
-		// lock the index (filesystem lock)
-		boost::filesystem::path index_lock_file = index_directory_;
-		index_lock_file /= "index.lock";
-		//index_lock_ = boost::interprocess::file_lock(index_lock_file.native().c_str());
-		//index_lock_.lock();
+    // create dir if it does not exist yet
+    boost::filesystem::create_directories(index_directory_);
 
+    index_lock_file /= "index.lock";
 
-		/**
-        super(IndexWriter, self).__init__(index_dir, refresh_interval=0,
-                                          logger=logging.getLogger("kv-writer"))
-        self.log.info('Writer started')
+    TRACE("locking index %s", index_lock_file.string().c_str());
 
-        self.segments_in_merger = {}
-        self.segments = []
-        self.commit_interval=commit_interval
-        self.write_counter = 0
-        self.merger_lock = threading.RLock()
+    std::ofstream o(index_lock_file.string(), std::ios_base::app);
 
-        self.segment_write_trigger = segment_write_trigger
-        self.compiler = None
+    index_lock_ =
+        boost::interprocess::file_lock(index_lock_file.string().c_str());
+    index_lock_.lock();
 
-        self.load_or_create_index()
+    index_finalizer_.StartFinalizerThread();
+    /**
+super(IndexWriter, self).__init__(index_dir, refresh_interval=0,
+                              logger=logging.getLogger("kv-writer"))
+self.log.info('Writer started')
 
-        # lock the index
-        self.lockfile = open(os.path.join(index_dir, 'master.lock'), 'w')
-        file_locking.lock(self.lockfile, file_locking.LOCK_EX)
+self.segments_in_merger = {}
+self.segments = []
+self.commit_interval=commit_interval
+self.write_counter = 0
+self.merger_lock = threading.RLock()
 
-        self._finalizer = IndexWriter.IndexerThread(self, logger=self.log, commit_interval=self.commit_interval)
-        self._finalizer.start()
-        **/
+self.segment_write_trigger = segment_write_trigger
+self.compiler = None
 
-	}
+self.load_or_create_index()
 
-	~IndexWriter(){
-		index_lock_.unlock();
+# lock the index
+self.lockfile = open(os.path.join(index_dir, 'master.lock'), 'w')
+file_locking.lock(self.lockfile, file_locking.LOCK_EX)
 
-	}
+self._finalizer = IndexWriter.IndexerThread(self, logger=self.log,
+commit_interval=self.commit_interval)
+self._finalizer.start()
+**/
+  }
 
-	void Set(const std::string& key, const std::string& value){
-		index_finalizer_.GetCompiler()->Add(key, value);
-		index_finalizer_.CheckForCommit();
-	}
+  ~IndexWriter() {
+    index_finalizer_.StopFinalizerThread();
+    index_lock_.unlock();
+  }
 
-	void Delete(){}
+  void Set(const std::string& key, const std::string& value) {
+    index_finalizer_.GetCompiler()->Add(key, value);
+    index_finalizer_.CheckForCommit();
+  }
 
-	void Flush(){}
+  void Delete() {}
 
-private:
-	boost::filesystem::path index_directory_;
-	boost::filesystem::path index_toc_file_;
-	boost::interprocess::file_lock index_lock_;
-	internal::IndexFinalizer index_finalizer_;
+  void Flush() { index_finalizer_.Flush(); }
 
+ private:
+  boost::filesystem::path index_directory_;
+  boost::filesystem::path index_toc_file_;
+  boost::interprocess::file_lock index_lock_;
+  internal::IndexFinalizer index_finalizer_;
 };
-
 
 } /* namespace index */
 } /* namespace keyvi */
@@ -140,7 +145,8 @@ import index_reader
 import file_locking
 
 def _get_segment_name(index_dir, prefix='master'):
-    filename = os.path.join(index_dir, "{}-{}-{}.kv".format(prefix, int(time.time() * 1000000), os.getpid()))
+    filename = os.path.join(index_dir, "{}-{}-{}.kv".format(prefix,
+int(time.time() * 1000000), os.getpid()))
     if type(filename) == unicode:
         filename = filename.encode("utf-8")
     return filename
@@ -164,7 +170,8 @@ def _merge(merge_job):
     return
 
 class MergeJob(object):
-    def __init__(self, process=None, start_time=0, merge_list=[], new_segment=None, merge_completed=False):
+    def __init__(self, process=None, start_time=0, merge_list=[],
+new_segment=None, merge_completed=False):
         self.process = process
         self.start_time = start_time
         self.merge_list = merge_list
@@ -205,7 +212,8 @@ class IndexWriter(index_reader.IndexReader):
             self.max_parallel_merges = 2
             self.log = logger
             self.merge_processes = []
-            self.log.info("Index Thread started, Commit interval set to {} seconds".format(self.commit_interval))
+            self.log.info("Index Thread started, Commit interval set to {}
+seconds".format(self.commit_interval))
             self.run_commit = False
             self.compile_semaphore = threading.BoundedSemaphore(5)
             self._stop_event = threading.Event()
@@ -218,8 +226,11 @@ class IndexWriter(index_reader.IndexReader):
                 self._run_merge()
                 now = time.time()
 
-                if self.run_commit or (int (now - self.last_commit) >= self.commit_interval):
-                    self.log.info("Last commit: {} {} {} {}".format(self.last_commit, now - self.last_commit, self.commit_interval, self.run_commit))
+                if self.run_commit or (int (now - self.last_commit) >=
+self.commit_interval):
+                    self.log.info("Last commit: {} {} {}
+{}".format(self.last_commit, now - self.last_commit, self.commit_interval,
+self.run_commit))
                     self.run_commit = False
                     self.last_commit = time.time()
                     self.compile()
@@ -235,7 +246,8 @@ class IndexWriter(index_reader.IndexReader):
                     merge_job.process.join()
 
             if any_merge_finalized:
-                self.merge_processes[:] = [m for m in self.merge_processes if not m.merge_completed]
+                self.merge_processes[:] = [m for m in self.merge_processes if
+not m.merge_completed]
 
 
         def _run_merge(self):
@@ -245,7 +257,8 @@ class IndexWriter(index_reader.IndexReader):
             merge_job = self._writer.find_merges()
 
             if merge_job is not None:
-                self.log.info("Start merge of {} segments".format(len(merge_job.merge_list)))
+                self.log.info("Start merge of {}
+segments".format(len(merge_job.merge_list)))
 
                 p = multiprocessing.Process(target=_merge, args=(merge_job, ))
                 merge_job.start_time = time.time()
@@ -292,7 +305,8 @@ class IndexWriter(index_reader.IndexReader):
             self.log.info('shutdown IndexThread')
             self.join()
 
-    def __init__(self, index_dir="kv-index", commit_interval=10, segment_write_trigger=10000):
+    def __init__(self, index_dir="kv-index", commit_interval=10,
+segment_write_trigger=10000):
 
         super(IndexWriter, self).__init__(index_dir, refresh_interval=0,
                                           logger=logging.getLogger("kv-writer"))
@@ -313,7 +327,8 @@ class IndexWriter(index_reader.IndexReader):
         self.lockfile = open(os.path.join(index_dir, 'master.lock'), 'w')
         file_locking.lock(self.lockfile, file_locking.LOCK_EX)
 
-        self._finalizer = IndexWriter.IndexerThread(self, logger=self.log, commit_interval=self.commit_interval)
+        self._finalizer = IndexWriter.IndexerThread(self, logger=self.log,
+commit_interval=self.commit_interval)
         self._finalizer.start()
 
     def __del__(self):
@@ -352,7 +367,8 @@ class IndexWriter(index_reader.IndexReader):
 
     def _init_lazy_compiler(self):
         if not self.compiler:
-            self.compiler = pykeyvi.JsonDictionaryCompiler(1024*1024*10, {"stable_insert": "true"})
+            self.compiler = pykeyvi.JsonDictionaryCompiler(1024*1024*10,
+{"stable_insert": "true"})
             self.write_counter = 0
 
     def find_merges(self):
@@ -380,7 +396,8 @@ class IndexWriter(index_reader.IndexReader):
 
                 to_merge.reverse()
 
-                merge_job = MergeJob(start_time=time.time(), merge_list=to_merge,
+                merge_job = MergeJob(start_time=time.time(),
+merge_list=to_merge,
                                      new_segment=new_segment)
 
         return merge_job
@@ -517,7 +534,8 @@ class IndexWriter(index_reader.IndexReader):
     def check(self):
         if not self._finalizer.is_alive:
             self.log.warning("IndexerThread not running, restarting")
-            self._finalizer = IndexWriter.IndexerThread(self, logger=self.log, commit_interval=self.commit_interval)
+            self._finalizer = IndexWriter.IndexerThread(self, logger=self.log,
+commit_interval=self.commit_interval)
             self._finalizer.start()
 
 
