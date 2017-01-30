@@ -55,7 +55,8 @@ class IndexFinalizer final {
         finalizer_callback_(/*finalizer_callback*/),
         do_flush_(false),
         flush_cond_(),
-        write_counter_(0) {
+        write_counter_(0),
+        stop_finalizer_thread_(true) {
     index_directory_ = index_directory;
   }
 
@@ -66,6 +67,7 @@ class IndexFinalizer final {
     }
 
     stop_finalizer_thread_ = false;
+    TRACE("Start Finalizer thread");
     finalizer_thread_ = std::thread(&IndexFinalizer::Finalizer, this);
   }
 
@@ -109,7 +111,7 @@ class IndexFinalizer final {
   finalizer_callback_t finalizer_callback_;
   std::atomic_bool do_flush_;
   std::mutex index_mutex_;
-  std::unique_lock<std::mutex> index_writer_lock_;
+  std::mutex flush_cond_mutex_;
   std::condition_variable flush_cond_;
   std::thread finalizer_thread_;
   std::atomic_bool stop_finalizer_thread_;
@@ -118,8 +120,8 @@ class IndexFinalizer final {
   boost::filesystem::path index_directory_;
 
   void Finalizer() {
-    std::unique_lock<std::mutex> l(index_mutex_);
-
+    std::unique_lock<std::mutex> l(flush_cond_mutex_);
+    TRACE("Finalizer loop");
     while (!stop_finalizer_thread_) {
       TRACE("Finalizer, check for finalization.");
       // reload
@@ -146,9 +148,12 @@ class IndexFinalizer final {
       flush_cond_.wait_for(l, std::chrono::seconds(1));
 
       if (do_flush_ == true) {
+        do_flush_ = false;
         Compile();
       }
     }
+
+    TRACE("Finalizer loop stop");
   }
 
   void Compile() {
@@ -194,10 +199,12 @@ class IndexFinalizer final {
     WritableSegment w(p.filename().string());
     // register segment
     RegisterSegment(w);
+
+    TRACE("Segment compiled and registered");
   }
 
   void RegisterSegment(WritableSegment segment) {
-    // std::lock_guard<std::mutex> lock(index_mutex_);
+    std::lock_guard<std::mutex> lock(index_mutex_);
     TRACE("add segment %s", segment.GetFilename().c_str());
     segments_.push_back(segment);
     WriteToc();
@@ -233,8 +240,15 @@ class IndexFinalizer final {
     boost::property_tree::ptree ptree;
     boost::property_tree::ptree files;
 
+    TRACE("Number of segments: %ld", segments_.size());
+
     for (auto s : segments_) {
-      files.put_value(s.GetFilename());
+      TRACE("put %s", s.GetFilename().c_str());
+      // files.put_value(s.GetFilename());
+      boost::property_tree::ptree sp;
+
+      sp.put("", s.GetFilename());
+      files.push_back(std::make_pair("", sp));
     }
 
     ptree.add_child("files", files);

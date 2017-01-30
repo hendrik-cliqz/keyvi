@@ -78,6 +78,7 @@ class IndexWriter final {
         boost::interprocess::file_lock(index_lock_file.string().c_str());
     index_lock_.lock();
 
+    TRACE("Start Finalizer thread");
     index_finalizer_.StartFinalizerThread();
     /**
 super(IndexWriter, self).__init__(index_dir, refresh_interval=0,
@@ -106,18 +107,24 @@ self._finalizer.start()
   }
 
   ~IndexWriter() {
+    TRACE("Stop Finalizer thread");
     index_finalizer_.StopFinalizerThread();
+    TRACE("Unlock Index");
     index_lock_.unlock();
   }
 
   void Set(const std::string& key, const std::string& value) {
+    TRACE("Set %s", key.c_str());
     index_finalizer_.GetCompiler()->Add(key, value);
     index_finalizer_.CheckForCommit();
   }
 
   void Delete() {}
 
-  void Flush() { index_finalizer_.Flush(); }
+  void Flush() {
+    TRACE("Flush (manually)");
+    index_finalizer_.Flush();
+  }
 
  private:
   boost::filesystem::path index_directory_;

@@ -44,10 +44,15 @@ BOOST_AUTO_TEST_CASE(simple) {
   IndexWriter writer(tmp_path.string());
 
   writer.Set("a", "{\"id\":3}");
-  std::this_thread::sleep_for(std::chrono::seconds(1));
-  std::this_thread::sleep_for(std::chrono::seconds(1));
+
   writer.Set("b", "{\"id\":4}");
   writer.Flush();
+  writer.Set("c", "{\"id\":5}");
+  std::this_thread::sleep_for(std::chrono::seconds(1));
+  std::this_thread::sleep_for(std::chrono::seconds(1));
+  writer.Set("d", "{\"id\":6}");
+  writer.Flush();
+  // std::this_thread::sleep_for(std::chrono::seconds(1));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
