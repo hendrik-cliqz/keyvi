@@ -55,6 +55,21 @@ BOOST_AUTO_TEST_CASE(simple) {
   // std::this_thread::sleep_for(std::chrono::seconds(1));
 }
 
+BOOST_AUTO_TEST_CASE(bigger_feed) {
+  using boost::filesystem::temp_directory_path;
+  using boost::filesystem::unique_path;
+
+  auto tmp_path = temp_directory_path();
+  tmp_path /= unique_path();
+  IndexWriter writer(tmp_path.string());
+
+  for (int i = 0; i < 100000; ++i){
+
+    writer.Set("a", "{\"id\":" + std::to_string(i) + "}");
+  }
+
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 } /* namespace index */
