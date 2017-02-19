@@ -52,6 +52,14 @@ class MergeJob final {
 
   }
 
+  const std::vector<WritableSegment>& Segments() const {
+    return segments_;
+  }
+
+  const WritableSegment& NewSegment() const {
+    return new_segment_;
+  }
+
  private:
   std::chrono::time_point<std::chrono::system_clock> start_time_;
   std::vector<WritableSegment> segments_;
