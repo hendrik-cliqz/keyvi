@@ -37,6 +37,7 @@
 #include "dictionary/dictionary_types.h"
 #include "index/internal/writable_segment.h"
 #include "index/internal/merge_job.h"
+#include "index/internal/merge_process.h"
 
 #define ENABLE_TRACING
 #include "dictionary/util/trace.h"
@@ -122,7 +123,7 @@ class IndexFinalizer final {
   size_t write_counter_;
   std::vector<WritableSegment> segments_;
   boost::filesystem::path index_directory_;
-  std::vector<MergeJob> merge_jobs_;
+  std::list<MergeProcess> merge_processes_;
 
   void Finalizer() {
     std::unique_lock<std::mutex> l(flush_cond_mutex_);
@@ -217,9 +218,24 @@ class IndexFinalizer final {
    * Check if any merge process is done and finalize if necessary
    */
   void FinalizeMerge() {
-    for (auto m : merge_jobs_) {
+
+
+    for (auto p : merge_processes_) {
+      if (p.TryFinalize()) {
+        if (p.Successful()) {
+          // remove old segments and replace it with new one
+
+
+        } else {
+          // mark all segments as mergable again
+          // todo throttle strategy?
+        }
+      }
+
       // TODO(hendrik): check if merge has finished
     }
+
+    //merge_processes_.erase()
 
     /*any_merge_finalized = False
 
@@ -287,7 +303,10 @@ class IndexFinalizer final {
     std::reverse(to_merge.begin(), to_merge.end());
 
     MergeJob m(std::chrono::system_clock::now(), to_merge, parent_segment);
-    merge_jobs_.push_back(m);
+    MergeProcess p(m);
+    p.Run();
+
+    merge_processes_.push_back(p);
 
     // actually run the merge
 
