@@ -35,6 +35,7 @@
 #include <thread>
 #include <vector>
 
+#include <boost/filesystem.hpp>
 #include <boost/filesystem/operations.hpp>
 #include <boost/interprocess/sync/file_lock.hpp>
 #include <boost/property_tree/json_parser.hpp>
@@ -80,30 +81,6 @@ class IndexWriter final {
 
     TRACE("Start Finalizer thread");
     index_finalizer_.StartFinalizerThread();
-    /**
-super(IndexWriter, self).__init__(index_dir, refresh_interval=0,
-                              logger=logging.getLogger("kv-writer"))
-self.log.info('Writer started')
-
-self.segments_in_merger = {}
-self.segments = []
-self.commit_interval=commit_interval
-self.write_counter = 0
-self.merger_lock = threading.RLock()
-
-self.segment_write_trigger = segment_write_trigger
-self.compiler = None
-
-self.load_or_create_index()
-
-# lock the index
-self.lockfile = open(os.path.join(index_dir, 'master.lock'), 'w')
-file_locking.lock(self.lockfile, file_locking.LOCK_EX)
-
-self._finalizer = IndexWriter.IndexerThread(self, logger=self.log,
-commit_interval=self.commit_interval)
-self._finalizer.start()
-**/
   }
 
   ~IndexWriter() {

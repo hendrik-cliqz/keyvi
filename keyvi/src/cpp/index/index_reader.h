@@ -34,6 +34,7 @@
 #include <thread>
 #include <vector>
 
+#include <boost/filesystem.hpp>
 #include <boost/filesystem/operations.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -41,7 +42,7 @@
 #include "dictionary/dictionary.h"
 #include "dictionary/fsa/internal/serialization_utils.h"
 #include "dictionary/match.h"
-#include "index/readonly_segment.h"
+#include "index/internal/segment.h"
 
 #define ENABLE_TRACING
 #include "dictionary/util/trace.h"
@@ -126,7 +127,7 @@ class IndexReader final {
   boost::filesystem::path index_toc_file_;
   std::time_t last_modification_time_;
   boost::property_tree::ptree index_toc_;
-  std::vector<ReadOnlySegment> segments_;
+  std::vector<internal::Segment> segments_;
   std::thread update_thread_;
   std::atomic_bool stop_update_thread_;
 
@@ -165,13 +166,13 @@ class IndexReader final {
 
     TRACE("reading segments");
 
-    std::vector<ReadOnlySegment> new_segments;
+    std::vector<internal::Segment> new_segments;
 
     for (boost::property_tree::ptree::value_type& f :
          index_toc_.get_child("files")) {
       boost::filesystem::path p(index_directory_);
       p /= f.second.data();
-      new_segments.push_back(ReadOnlySegment(p.string()));
+      new_segments.push_back(internal::Segment(p));
     }
 
     // reverse the list

@@ -27,17 +27,18 @@
 #define KEYVI_INDEX_INTERNAL_INDEX_FINALIZER_H_
 
 #include <atomic>
+#include <algorithm>
 #include <condition_variable>
 #include <ctime>
+#include <list>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "dictionary/dictionary_compiler.h"
 #include "dictionary/dictionary_types.h"
-#include "index/internal/writable_segment.h"
+#include "index/internal/segment.h"
 #include "index/internal/merge_job.h"
-#include "index/internal/merge_process.h"
 
 #define ENABLE_TRACING
 #include "dictionary/util/trace.h"
@@ -50,15 +51,15 @@ class IndexFinalizer final {
   typedef std::function<void(const std::string&)> finalizer_callback_t;
 
  public:
-  IndexFinalizer(const std::string& index_directory
-
-                 /*const finalizer_callback_t finalizer_callback*/)
+  explicit IndexFinalizer(const std::string& index_directory,
+                          const std::chrono::duration<double>& flush_interval
+                          = std::chrono::milliseconds(1000))
       : compiler_(),
-        finalizer_callback_(/*finalizer_callback*/),
         do_flush_(false),
         flush_cond_(),
         write_counter_(0),
-        stop_finalizer_thread_(true) {
+        stop_finalizer_thread_(true),
+        flush_interval_(flush_interval) {
     index_directory_ = index_directory;
   }
 
@@ -77,7 +78,10 @@ class IndexFinalizer final {
   void StopFinalizerThread() {
     stop_finalizer_thread_ = true;
     if (finalizer_thread_.joinable()) {
+      std::this_thread::sleep_for(std::chrono::seconds(1));
       finalizer_thread_.join();
+      TRACE("finalizer thread joined");
+      TRACE("Open merges: %ld", merge_jobs_.size());
     }
   }
 
@@ -113,7 +117,6 @@ class IndexFinalizer final {
 
  private:
   std::shared_ptr<dictionary::JsonDictionaryCompilerSmallData> compiler_;
-  finalizer_callback_t finalizer_callback_;
   std::atomic_bool do_flush_;
   std::recursive_mutex index_mutex_;
   std::mutex flush_cond_mutex_;
@@ -121,9 +124,15 @@ class IndexFinalizer final {
   std::thread finalizer_thread_;
   std::atomic_bool stop_finalizer_thread_;
   size_t write_counter_;
-  std::vector<WritableSegment> segments_;
+  std::vector<Segment> segments_;
   boost::filesystem::path index_directory_;
-  std::list<MergeProcess> merge_processes_;
+  std::list<MergeJob> merge_jobs_;
+  std::chrono::system_clock::time_point last_flush_;
+  std::chrono::duration<double> flush_interval_;
+  std::chrono::duration<double> finalizer_poll_interval_ =
+      std::chrono::milliseconds(50);
+  size_t max_concurrent_merges = 2;
+
 
   void Finalizer() {
     std::unique_lock<std::mutex> l(flush_cond_mutex_);
@@ -154,13 +163,15 @@ class IndexFinalizer final {
         */
 
       // sleep for some time or until woken up
-      flush_cond_.wait_for(l, std::chrono::milliseconds(60000));
+      flush_cond_.wait_for(l, finalizer_poll_interval_);
       auto tp = std::chrono::system_clock::now();
-      TRACE("wakeup finalizer %s %ld ***", l.owns_lock() ? "true":"false", tp.time_since_epoch());
-      if (do_flush_ == true) {
+      TRACE("wakeup finalizer %s %ld ***", l.owns_lock() ? "true":"false",
+          tp.time_since_epoch());
 
+      if (do_flush_ == true || tp - last_flush_ > flush_interval_) {
         do_flush_ = false;
         Compile();
+        last_flush_ = tp;
       }
     }
 
@@ -194,20 +205,38 @@ class IndexFinalizer final {
     self._writer.register_new_segment(filename)
     */
 
-    // TODO(hendrik): figure out how to make this thread-safe
+    if (compiler_.get() == nullptr) {
+      return;
+    }
+
     std::shared_ptr<dictionary::JsonDictionaryCompilerSmallData> compiler;
+    TRACE("compile");
+
+    // TODO(hendrik) this is not safe, no guarantee that compiler
+    // is not in use in the writer thread
+    // swap already in check for commit into another member, set an atomic bool
+    // if compile is already going on think about throttling
     compiler_.swap(compiler);
 
+    // additional check
+    if (compiler.get() == nullptr) {
+      return;
+    }
+
+    // we need to somehow ensure that nobody writes to it
     compiler->Compile();
 
     boost::filesystem::path p(index_directory_);
     p /= boost::filesystem::unique_path("%%%%-%%%%-%%%%-%%%%.kv");
 
+    TRACE("write to file %s %s", p.string().c_str(),
+          p.filename().string().c_str());
+
     compiler->WriteToFile(p.string());
 
     // free up resources
     compiler.reset();
-    WritableSegment w(p.filename().string());
+    Segment w(p);
     // register segment
     RegisterSegment(w);
 
@@ -218,24 +247,77 @@ class IndexFinalizer final {
    * Check if any merge process is done and finalize if necessary
    */
   void FinalizeMerge() {
-
-
-    for (auto p : merge_processes_) {
+    bool any_merge_finalized = false;
+    TRACE("Finalize Merge");
+    for (MergeJob& p : merge_jobs_) {
       if (p.TryFinalize()) {
         if (p.Successful()) {
-          // remove old segments and replace it with new one
+          TRACE("rewriting segment list");
+          any_merge_finalized = true;
 
+          std::lock_guard<std::recursive_mutex> lock(index_mutex_);
+
+          // remove old segments and replace it with new one
+          std::vector<Segment> new_segments;
+          bool merged_new_segment = false;
+          std::copy_if(segments_.begin(),
+                       segments_.end(),
+                       std::back_inserter(new_segments),
+                       [&new_segments, &merged_new_segment, &p]
+                        (const Segment& s) {
+
+                          TRACE("checking %s", s.GetFilename().c_str());
+                          if (std::count_if(p.Segments().begin(),
+                                p.Segments().end(),
+                                [s](const Segment& s2) {
+                                  return s2.GetFilename() == s.GetFilename();
+                                })) {
+
+                            if (!merged_new_segment) {
+                              new_segments.push_back(p.MergedSegment());
+                              merged_new_segment = true;
+                            }
+                            return false;
+                          }
+                          return true;
+          });
+          TRACE("merged segment %s", p.MergedSegment().GetFilename().c_str());
+          TRACE("1st segment after merge: %s", new_segments[0].GetFilename().c_str());
+
+
+          segments_.swap(new_segments);
+          WriteToc();
+
+          // delete old segment files
+          for (const Segment s : p.Segments()) {
+            TRACE("delete old file: %s", s.GetFilename().c_str());
+            std::remove(s.GetFilename().c_str());
+          }
+
+          p.SetMerged();
 
         } else {
+          // the merge process failed
+          TRACE("merge failed, reset markers");
           // mark all segments as mergable again
+          for (auto s : p.Segments()) {
+            s.UnMarkMerge();
+          }
+
           // todo throttle strategy?
         }
       }
-
-      // TODO(hendrik): check if merge has finished
+      // else the merge is still running, maybe check how long it already runs
     }
 
-    //merge_processes_.erase()
+
+    if (any_merge_finalized) {
+      TRACE("delete merge job");
+      std::remove_if(merge_jobs_.begin(),
+                     merge_jobs_.end(),
+                     [](const MergeJob& j) {return j.Merged();});
+    }
+    // merge_processes_.erase()
 
     /*any_merge_finalized = False
 
@@ -255,13 +337,19 @@ class IndexFinalizer final {
    * Run a merge if mergers are available and segments require merge
    */
   void RunMerge() {
-
     // to few segments, return
     if (segments_.size() <=1) {
       return;
     }
 
-    std::vector<WritableSegment> to_merge;
+    if (merge_jobs_.size() == max_concurrent_merges) {
+      // to many merges already running, so throttle
+      return;
+    }
+
+    // todo: merger semaphore check
+
+    std::vector<Segment> to_merge;
 
     for (auto s : segments_) {
       if (!s.MarkedForMerge()) {
@@ -293,7 +381,10 @@ class IndexFinalizer final {
     }
 
     TRACE("enough segments found for merging");
-    WritableSegment parent_segment("TODO_CHANGEME");
+    boost::filesystem::path p(index_directory_);
+    p /= boost::filesystem::unique_path("%%%%-%%%%-%%%%-%%%%.kv");
+    Segment parent_segment(p, false);
+
 
     for (auto s : to_merge) {
       s.MarkMerge(&parent_segment);
@@ -302,11 +393,8 @@ class IndexFinalizer final {
     // reverse the list
     std::reverse(to_merge.begin(), to_merge.end());
 
-    MergeJob m(std::chrono::system_clock::now(), to_merge, parent_segment);
-    MergeProcess p(m);
-    p.Run();
-
-    merge_processes_.push_back(p);
+    merge_jobs_.emplace_back(to_merge, parent_segment);
+    merge_jobs_.back().Run();
 
     // actually run the merge
 
@@ -331,7 +419,7 @@ class IndexFinalizer final {
 
   }
 
-  void RegisterSegment(WritableSegment segment) {
+  void RegisterSegment(Segment segment) {
     std::lock_guard<std::recursive_mutex> lock(index_mutex_);
     TRACE("add segment %s", segment.GetFilename().c_str());
     segments_.push_back(segment);
@@ -374,7 +462,6 @@ class IndexFinalizer final {
       TRACE("put %s", s.GetFilename().c_str());
       // files.put_value(s.GetFilename());
       boost::property_tree::ptree sp;
-
       sp.put("", s.GetFilename());
       files.push_back(std::make_pair("", sp));
     }
