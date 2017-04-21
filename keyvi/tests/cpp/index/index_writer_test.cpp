@@ -36,6 +36,7 @@ namespace index {
 BOOST_AUTO_TEST_SUITE(IndexWriterTests)
 
 BOOST_AUTO_TEST_CASE(simple) {
+
   using boost::filesystem::temp_directory_path;
   using boost::filesystem::unique_path;
 
@@ -63,10 +64,10 @@ BOOST_AUTO_TEST_CASE(bigger_feed) {
   tmp_path /= unique_path();
   IndexWriter writer(tmp_path.string());
 
-  for (int i = 0; i < 100000; ++i){
-
+  for (int i = 0; i < 100000; ++i) {
     writer.Set("a", "{\"id\":" + std::to_string(i) + "}");
   }
+
 
 }
 

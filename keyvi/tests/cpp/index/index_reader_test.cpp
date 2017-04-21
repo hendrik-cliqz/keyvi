@@ -79,7 +79,6 @@ BOOST_AUTO_TEST_CASE(loadIndex) {
 
   BOOST_CHECK_EQUAL(reader["abbcd"].GetValueAsString(), "\"{c:8}\"");
   std::this_thread::sleep_for(std::chrono::seconds(1));
-  reader.StartUpdateWatcher();
   std::vector<std::pair<std::string, std::string>> test_data_4 = {
       {"abbcd", "{c:10}"}};
   index.AddSegment(test_data_4);
