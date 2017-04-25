@@ -60,6 +60,7 @@ class MergeJob final {
   };
 
  public:
+  // todo: add ability to stop merging for shutdown
   MergeJob(const std::vector<Segment>& segments, const Segment& new_segment)
   : payload_(segments, new_segment) {}
 
@@ -92,6 +93,7 @@ class MergeJob final {
       });
   }
 
+  // todo: joinable() blocks, use atomic bool instead
   bool isRunning() const {
     return !job_thread_.joinable();
   }

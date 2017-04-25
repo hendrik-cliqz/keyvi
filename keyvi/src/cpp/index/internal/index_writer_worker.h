@@ -40,7 +40,7 @@
 #include "index/internal/segment.h"
 #include "index/internal/merge_job.h"
 
-#define ENABLE_TRACING
+// #define ENABLE_TRACING
 #include "dictionary/util/trace.h"
 
 namespace keyvi {
@@ -49,8 +49,8 @@ namespace internal {
 
 class IndexWriterWorker final {
   typedef std::function<void(const std::string&)> finalizer_callback_t;
-  typedef std::shared_ptr<dictionary::JsonDictionaryCompilerSmallData>
-    compiler_t;
+  typedef dictionary::JsonDictionaryCompilerSmallData compiler_t;
+  typedef std::shared_ptr<compiler_t> compiler_t_ptr;
 
  public:
   explicit IndexWriterWorker(const std::string& index_directory,
@@ -85,7 +85,10 @@ class IndexWriterWorker final {
 
   void StopWorkerThread() {
     stop_finalizer_thread_ = true;
+
+    // todo: joinable blocks
     if (finalizer_thread_.joinable()) {
+      // todo: what does sleep here?
       std::this_thread::sleep_for(std::chrono::milliseconds(200));
       finalizer_thread_.join();
       TRACE("worker thread joined");
@@ -93,47 +96,67 @@ class IndexWriterWorker final {
     }
   }
 
-  dictionary::JsonDictionaryCompilerSmallData* GetCompiler() {
-    if (compiler_.get() == nullptr) {
-      // todo
+  compiler_t* AcquireCompiler() {
+    compiler_in_use_ = true;
 
-      compiler_.reset(new dictionary::JsonDictionaryCompilerSmallData());
+    compiler_t* c = compiler_.get();
+
+    if (c == nullptr) {
+      compiler_.reset(new compiler_t());
+      c = compiler_.get();
     }
 
-    return compiler_.get();
+    return c;
   }
 
-  bool Flush(bool async = true) {
-    if (do_flush_) {
-      return false;
+
+  void ReleaseCompiler() {
+    // while the current compiler was in use, check whether the
+    // background worker tried to flush
+    if (compiler_bg_dirty_ && compiler_to_flush_bg_.get() != nullptr) {
+      std::cout << "flush bg 4" << std::endl;
+      CompileAndRegister(&compiler_to_flush_bg_);
     }
 
-    compiler_.swap(compiler_to_flush_);
-
-    if (async) {
-      do_flush_ = true;
-      auto tp = std::chrono::system_clock::now();
-      TRACE("notify %ld", tp.time_since_epoch());
-      flush_cond_.notify_one();
-      return true;
-    }  //  else
-
-    // TODO: blocking implementation
-    return true;
-  }
-
-  void CheckForCommit() {
     if (++write_counter_ > 1000) {
-      // todo: make non-blocking
-      if (Flush()) {
+      if (DoFlush()) {
+        std::cout << "flushed " << write_counter_ << std::endl;
         write_counter_ = 0;
+        // todo: more throttling needed if the background compile cannot catch up
+      } else if (write_counter_ > 10000) {
+        std::this_thread::yield();
       }
     }
+
+    compiler_in_use_ = false;
   }
 
+  /**
+   * Flush for external use.
+   */
+  void Flush(bool async = true) {
+    // ensure that background flash does not kick in
+    // todo: is that enough?
+    compiler_in_use_ = true;
+    if (compiler_bg_dirty_ && compiler_to_flush_bg_.get() != nullptr) {
+      std::cout << "flush bg 3" << std::endl;
+      CompileAndRegister(&compiler_to_flush_bg_);
+    }
+
+    DoFlush(async);
+    compiler_in_use_ = false;
+  }
+
+
+
  private:
-  compiler_t compiler_;
-  compiler_t compiler_to_flush_;
+  compiler_t_ptr compiler_;
+  compiler_t_ptr compiler_to_flush_;
+  compiler_t_ptr compiler_to_flush_bg_;
+
+  std::atomic_bool compiler_in_use_;
+  std::atomic_bool compiler_bg_dirty_;
+
   std::atomic_bool do_flush_;
   std::recursive_mutex index_mutex_;
   std::mutex flush_cond_mutex_;
@@ -150,6 +173,24 @@ class IndexWriterWorker final {
       std::chrono::milliseconds(50);
   size_t max_concurrent_merges = 2;
 
+  bool DoFlush(bool async = true) {
+    if (do_flush_ || compiler_.get() == nullptr) {
+      return false;
+    }
+
+    // no need for making it atomic??
+    compiler_.swap(compiler_to_flush_);
+    // std::atomic_store(&compiler_, compiler_to_flush_);
+
+    if (async) {
+      do_flush_ = true;
+      flush_cond_.notify_one();
+      return true;
+    }  //  else
+
+    // TODO: blocking implementation
+    return true;
+  }
 
   void Finalizer() {
     std::unique_lock<std::mutex> l(flush_cond_mutex_);
@@ -173,13 +214,72 @@ class IndexWriterWorker final {
       }
     }
 
+    // check that there are no open compilers
+    if (compiler_to_flush_bg_.get() != nullptr) {
+      CompileAndRegister(&compiler_to_flush_bg_);
+    }
+
+    if (compiler_to_flush_.get() != nullptr) {
+      CompileAndRegister(&compiler_to_flush_);
+    }
+
+    if (compiler_.get() != nullptr) {
+      CompileAndRegister(&compiler_);
+    }
+
     TRACE("Finalizer loop stop");
   }
 
   void Compile() {
     TRACE("compile");
+    // [1] check if there is already a compiler waiting to get finalized
+    // while there is no compiler running at the moment
+    if (compiler_in_use_ == false && compiler_to_flush_bg_.get() != nullptr) {
 
-    compiler_to_flush_->Compile();
+      // todo: not safe
+      compiler_bg_dirty_ = false;
+      std::cout << "flush bg 2" << std::endl;
+      CompileAndRegister(&compiler_to_flush_bg_);
+    }
+
+    if (compiler_to_flush_.get() == nullptr) {
+      // nothing to flush, check if triggered by flush interval
+      if (do_flush_ == false) {
+          // check if there is something to compile
+          if (compiler_.get() != nullptr) {
+            // get the state  before swapping
+            bool compiler_in_use = compiler_in_use_;
+            compiler_bg_dirty_ = false;
+
+            // not atomic, mitigated by the atomic_bool
+            compiler_to_flush_bg_.swap(compiler_);
+
+            // it's possible that the compiler got null while  swapping
+            // todo: adjust write counter
+            if (compiler_to_flush_bg_.get() == nullptr) {
+              return;
+            }
+
+            // note: compiler might be in use
+            // in the low likely event that while swapping a compiler was
+            // returned and in_use changed to false, compile will finish at [1],
+            // at the next flush
+            if (compiler_in_use) {
+              compiler_bg_dirty_ = true;
+            } else {
+              std::cout << "flush bg 1" << std::endl;
+              CompileAndRegister(&compiler_to_flush_bg_);
+            }
+          }
+      }
+      return;
+    }
+    std::cout << "write flush" << std::endl;
+    CompileAndRegister(&compiler_to_flush_);
+  }
+
+  void CompileAndRegister(compiler_t_ptr* compiler) {
+    compiler->get()->Compile();
 
     boost::filesystem::path p(index_directory_);
     p /= boost::filesystem::unique_path("%%%%-%%%%-%%%%-%%%%.kv");
@@ -187,10 +287,10 @@ class IndexWriterWorker final {
     TRACE("write to file %s %s", p.string().c_str(),
           p.filename().string().c_str());
 
-    compiler_to_flush_->WriteToFile(p.string());
+    compiler->get()->WriteToFile(p.string());
 
     // free up resources
-    compiler_to_flush_.reset();
+    compiler->reset();
     Segment w(p);
     // register segment
     RegisterSegment(w);
@@ -246,7 +346,7 @@ class IndexWriterWorker final {
           // delete old segment files
           for (const Segment s : p.Segments()) {
             TRACE("delete old file: %s", s.GetFilename().c_str());
-            std::remove(s.GetFilename().c_str());
+            std::remove(s.GetPath().string().c_str());
           }
 
           p.SetMerged();
@@ -265,12 +365,13 @@ class IndexWriterWorker final {
       // else the merge is still running, maybe check how long it already runs
     }
 
-
     if (any_merge_finalized) {
       TRACE("delete merge job");
-      std::remove_if(merge_jobs_.begin(),
-                     merge_jobs_.end(),
-                     [](const MergeJob& j) {return j.Merged();});
+
+      merge_jobs_.erase(std::remove_if(merge_jobs_.begin(),
+                                       merge_jobs_.end(),
+                                       [](const MergeJob& j)
+                                         {return j.Merged();}));
     }
   }
 
@@ -310,9 +411,6 @@ class IndexWriterWorker final {
     for (auto s : to_merge) {
       s.MarkMerge(&parent_segment);
     }
-
-    // reverse the list
-    std::reverse(to_merge.begin(), to_merge.end());
 
     merge_jobs_.emplace_back(to_merge, parent_segment);
     merge_jobs_.back().Run();

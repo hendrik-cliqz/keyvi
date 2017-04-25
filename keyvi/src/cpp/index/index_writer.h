@@ -91,16 +91,16 @@ class IndexWriter final {
   }
 
   void Set(const std::string& key, const std::string& value) {
-    TRACE("Set %s", key.c_str());
-    index_finalizer_.GetCompiler()->Add(key, value);
-    index_finalizer_.CheckForCommit();
+    //TRACE("Set %s", key.c_str());
+    index_finalizer_.AcquireCompiler()->Add(key, value);
+    index_finalizer_.ReleaseCompiler();
   }
 
   void Delete() {}
 
-  void Flush() {
+  void Flush(bool async = true) {
     TRACE("Flush (manually)");
-    index_finalizer_.Flush();
+    index_finalizer_.Flush(async);
   }
 
  private:
