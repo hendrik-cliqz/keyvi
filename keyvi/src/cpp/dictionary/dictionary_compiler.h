@@ -49,7 +49,7 @@
 namespace keyvi {
 namespace dictionary {
 
-typedef const fsa::internal::IValueStoreWriter::vs_param_t compiler_param_t;
+typedef fsa::internal::IValueStoreWriter::vs_param_t compiler_param_t;
 typedef sort::key_value_pair<std::string, fsa::ValueHandle> key_value_t;
 
 /**

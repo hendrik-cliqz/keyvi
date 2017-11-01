@@ -45,7 +45,7 @@
 #include "dictionary/match.h"
 #include "index/internal/segment.h"
 
-#define ENABLE_TRACING
+//#define ENABLE_TRACING
 #include "dictionary/util/trace.h"
 
 namespace keyvi {

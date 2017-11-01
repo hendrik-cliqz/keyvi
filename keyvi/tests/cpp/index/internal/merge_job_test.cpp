@@ -60,12 +60,12 @@ BOOST_AUTO_TEST_CASE(simple) {
       dictionary::testing::TempDictionary::makeTempDictionaryFromJson
       (test_data2);
 
-  Segment w1(dictionary.GetFileName());
-  Segment w2(dictionary2.GetFileName());
+  segment_t w1(new Segment (dictionary.GetFileName()));
+  segment_t w2(new Segment (dictionary2.GetFileName()));
 
-  Segment mw("merged.kv", false);
+  boost::filesystem::path p("merged.kv");
 
-  MergeJob m({w1, w2}, mw);
+  MergeJob m({w1, w2}, p);
   m.Run();
 
   int retry = 10;

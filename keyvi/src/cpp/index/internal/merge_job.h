@@ -15,17 +15,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-
-/*
- * merge_process.h
- *
- *  Created on: Feb 17, 2017
- *      Author: hendrik
- */
-
 #ifndef KEYVI_INDEX_INTERNAL_MERGE_PROCESS_H_
 #define KEYVI_INDEX_INTERNAL_MERGE_PROCESS_H_
 
+#include <atomic>
+#include <functional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -38,7 +32,7 @@
 
 #include "index/internal/segment.h"
 
-#define ENABLE_TRACING
+// #define ENABLE_TRACING
 #include "dictionary/util/trace.h"
 
 namespace keyvi {
@@ -47,61 +41,79 @@ namespace internal {
 
 class MergeJob final {
   struct MergeJobPayload {
-    MergeJobPayload(const std::vector<Segment>& segments,
-                    const Segment& new_segment)
-    : segments_(segments), new_segment_(new_segment) {}
+    explicit MergeJobPayload(std::vector<segment_t> segments,
+                             const boost::filesystem::path& output_filename)
+    : segments_(segments),
+      output_filename_(output_filename),
+      process_finished_(false) {
+    }
 
-    std::vector<Segment> segments_;
-    Segment new_segment_;
+    MergeJobPayload(MergeJobPayload&&) = default;
+    MergeJobPayload& operator=(MergeJobPayload&&) = default;
+
+    std::vector<segment_t> segments_;
+    boost::filesystem::path output_filename_;
     std::chrono::time_point<std::chrono::system_clock> start_time_;
     std::chrono::time_point<std::chrono::system_clock> end_time_;
     int exit_code_ = -1;
     bool merge_done = false;
+    std::atomic_bool process_finished_;
   };
 
  public:
   // todo: add ability to stop merging for shutdown
-  MergeJob(const std::vector<Segment>& segments, const Segment& new_segment)
-  : payload_(segments, new_segment) {}
+  explicit MergeJob(std::vector<segment_t> segments,
+                    const boost::filesystem::path& output_filename)
+  : payload_(segments, output_filename), job_thread_() {}
+
+  MergeJob(MergeJob&&) = default;
+  MergeJob& operator=(MergeJob&&) = default;
 
   void Run() {
     MergeJobPayload* job = &payload_;
-
     job_thread_ = std::thread([job]() {
       job->start_time_ = std::chrono::system_clock::now();
 
       misc::Process merge_process([job] {
-          // dictionary::JsonDictionaryMerger merger();
+        try {
           dictionary::DictionaryMerger<
           dictionary::fsa::internal::SparseArrayPersistence<>,
           dictionary::fsa::internal::JsonValueStore> m(
               dictionary::merger_param_t({{"memory_limit_mb", "10"}}));
 
           for (auto s : job->segments_) {
-            m.Add(s.GetPath().string());
+            m.Add(s->GetPath().string());
           }
 
           TRACE("merge done");
-          m.Merge(job->new_segment_.GetPath().string());
+          m.Merge(job->output_filename_.string());
           exit(0);
-          });
+        } catch (std::exception &e) {
+          exit(1);
+        }
+      });
 
       job->exit_code_ = merge_process.get_exit_status();
       job->end_time_ = std::chrono::system_clock::now();
-
+      job->process_finished_ = true;
       TRACE("Merge finished with %ld", job->exit_code_);
       });
   }
 
-  // todo: joinable() blocks, use atomic bool instead
   bool isRunning() const {
-    return !job_thread_.joinable();
+    TRACE("Process finished %s", payload_.process_finished_ ? "yes" : "no");
+    return !payload_.process_finished_;
   }
 
   bool TryFinalize() {
-    if (job_thread_.joinable()) {
-      job_thread_.join();
 
+    // already joined
+    if (!job_thread_.joinable()) {
+      return true;
+    }
+
+    if (payload_.process_finished_) {
+      job_thread_.join();
       return true;
     }
 
@@ -113,12 +125,12 @@ class MergeJob final {
     return payload_.exit_code_ == 0;
   }
 
-  const std::vector<Segment>& Segments() const {
+  const std::vector<segment_t>& Segments() const {
     return payload_.segments_;
   }
 
-  const Segment& MergedSegment() const {
-    return payload_.new_segment_;
+  const segment_t MergedSegment() const {
+    return segment_t(new Segment(payload_.output_filename_, false));
   }
 
   void SetMerged() {
@@ -127,6 +139,10 @@ class MergeJob final {
 
   const bool Merged() const {
     return payload_.merge_done;
+  }
+
+  void Wait() {
+    job_thread_.join();
   }
 
   // todo: ability to kill job/process

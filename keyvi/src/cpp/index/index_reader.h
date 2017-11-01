@@ -46,7 +46,7 @@
 #include "index/internal/index_reader_worker.h"
 
 
-#define ENABLE_TRACING
+// #define ENABLE_TRACING
 #include "dictionary/util/trace.h"
 
 namespace keyvi {

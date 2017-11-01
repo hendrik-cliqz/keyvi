@@ -15,18 +15,10 @@
  * limitations under the License.
  */
 
-
-/*
- * segment.h
- *
- *  Created on: Jan 13, 2017
- *      Author: hendrik
- */
-
 #ifndef KEYVI_INDEX_SEGMENT_H_
 #define KEYVI_INDEX_SEGMENT_H_
 
-
+#include <memory>
 #include <set>
 #include <string>
 #include <boost/filesystem.hpp>
@@ -42,7 +34,7 @@ class Segment final {
   explicit Segment(const boost::filesystem::path& path, const bool load = true)
       : path_(path), filename_(path.filename().string()), deleted_keys_(),
         dictionary_(),
-        parent_segment_(nullptr) {
+        in_merge_(false) {
     if (load) {
       Load();
     }
@@ -62,26 +54,27 @@ class Segment final {
     return filename_;
   }
 
-  void MarkMerge(Segment* parent_segment) {
-      parent_segment_ = parent_segment;
+  void MarkMerge() {
+      in_merge_ = true;
     }
 
-  void UnMarkMerge() { parent_segment_ = nullptr; }
+  void UnMarkMerge() { in_merge_ = false; }
 
-  bool MarkedForMerge() const { return parent_segment_ != nullptr; }
+  bool MarkedForMerge() const { return in_merge_; }
 
  private:
   boost::filesystem::path path_;
   std::string filename_;
   std::set<std::string> deleted_keys_;
   dictionary::dictionary_t dictionary_;
-  Segment* parent_segment_;
+  bool in_merge_;
 
   void Load() {
     dictionary_.reset(new dictionary::Dictionary(path_.string()));
   }
-
 };
+
+typedef std::shared_ptr<Segment> segment_t;
 
 } /* namespace internal */
 } /* namespace index */

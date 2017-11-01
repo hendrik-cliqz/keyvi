@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <condition_variable>
 #include <ctime>
+#include <memory>
 #include <list>
 #include <string>
 #include <thread>
@@ -40,7 +41,7 @@
 #include "index/internal/segment.h"
 #include "index/internal/merge_job.h"
 
-// #define ENABLE_TRACING
+//#define ENABLE_TRACING
 #include "dictionary/util/trace.h"
 
 namespace keyvi {
@@ -88,12 +89,15 @@ class IndexWriterWorker final {
 
     // todo: joinable blocks
     if (finalizer_thread_.joinable()) {
-      // todo: what does sleep here?
-      std::this_thread::sleep_for(std::chrono::milliseconds(200));
       finalizer_thread_.join();
       TRACE("worker thread joined");
       TRACE("Open merges: %ld", merge_jobs_.size());
     }
+
+    for (MergeJob& p : merge_jobs_) {
+      p.Wait();
+    }
+    FinalizeMerge();
   }
 
   compiler_t* AcquireCompiler() {
@@ -102,7 +106,12 @@ class IndexWriterWorker final {
     compiler_t* c = compiler_.get();
 
     if (c == nullptr) {
-      compiler_.reset(new compiler_t());
+      TRACE("re-create compiler");
+      dictionary::compiler_param_t params = dictionary::compiler_param_t{
+          {STABLE_INSERTS, "true"}
+        };
+
+      compiler_.reset(new compiler_t(params));
       c = compiler_.get();
     }
 
@@ -114,15 +123,13 @@ class IndexWriterWorker final {
     // while the current compiler was in use, check whether the
     // background worker tried to flush
     if (compiler_bg_dirty_ && compiler_to_flush_bg_.get() != nullptr) {
-      std::cout << "flush bg 4" << std::endl;
       CompileAndRegister(&compiler_to_flush_bg_);
     }
 
     if (++write_counter_ > 1000) {
       if (DoFlush()) {
-        std::cout << "flushed " << write_counter_ << std::endl;
         write_counter_ = 0;
-        // todo: more throttling needed if the background compile cannot catch up
+        // todo: throttle needed if the background compile cannot catch up
       } else if (write_counter_ > 10000) {
         std::this_thread::yield();
       }
@@ -135,11 +142,9 @@ class IndexWriterWorker final {
    * Flush for external use.
    */
   void Flush(bool async = true) {
-    // ensure that background flash does not kick in
-    // todo: is that enough?
+    // ensure that background flush does not kick in
     compiler_in_use_ = true;
     if (compiler_bg_dirty_ && compiler_to_flush_bg_.get() != nullptr) {
-      std::cout << "flush bg 3" << std::endl;
       CompileAndRegister(&compiler_to_flush_bg_);
     }
 
@@ -163,14 +168,14 @@ class IndexWriterWorker final {
   std::condition_variable flush_cond_;
   std::thread finalizer_thread_;
   std::atomic_bool stop_finalizer_thread_;
-  size_t write_counter_;
-  std::vector<Segment> segments_;
+  std::atomic_size_t write_counter_;
+  std::vector<segment_t> segments_;
   boost::filesystem::path index_directory_;
   std::list<MergeJob> merge_jobs_;
   std::chrono::system_clock::time_point last_flush_;
   std::chrono::duration<double> flush_interval_;
   std::chrono::duration<double> finalizer_poll_interval_ =
-      std::chrono::milliseconds(50);
+      std::chrono::milliseconds(10);
   size_t max_concurrent_merges = 2;
 
   bool DoFlush(bool async = true) {
@@ -238,7 +243,6 @@ class IndexWriterWorker final {
 
       // todo: not safe
       compiler_bg_dirty_ = false;
-      std::cout << "flush bg 2" << std::endl;
       CompileAndRegister(&compiler_to_flush_bg_);
     }
 
@@ -260,6 +264,9 @@ class IndexWriterWorker final {
               return;
             }
 
+            // reset the counter
+            write_counter_ = 0;
+
             // note: compiler might be in use
             // in the low likely event that while swapping a compiler was
             // returned and in_use changed to false, compile will finish at [1],
@@ -267,14 +274,12 @@ class IndexWriterWorker final {
             if (compiler_in_use) {
               compiler_bg_dirty_ = true;
             } else {
-              std::cout << "flush bg 1" << std::endl;
               CompileAndRegister(&compiler_to_flush_bg_);
             }
           }
       }
       return;
     }
-    std::cout << "write flush" << std::endl;
     CompileAndRegister(&compiler_to_flush_);
   }
 
@@ -291,7 +296,7 @@ class IndexWriterWorker final {
 
     // free up resources
     compiler->reset();
-    Segment w(p);
+    segment_t w(new Segment (p));
     // register segment
     RegisterSegment(w);
 
@@ -303,6 +308,7 @@ class IndexWriterWorker final {
    */
   void FinalizeMerge() {
     bool any_merge_finalized = false;
+
     TRACE("Finalize Merge");
     for (MergeJob& p : merge_jobs_) {
       if (p.TryFinalize()) {
@@ -313,19 +319,20 @@ class IndexWriterWorker final {
           std::lock_guard<std::recursive_mutex> lock(index_mutex_);
 
           // remove old segments and replace it with new one
-          std::vector<Segment> new_segments;
+          std::vector<segment_t> new_segments;
           bool merged_new_segment = false;
+
           std::copy_if(segments_.begin(),
                        segments_.end(),
                        std::back_inserter(new_segments),
                        [&new_segments, &merged_new_segment, &p]
-                        (const Segment& s) {
+                        (const segment_t& s) {
 
-                          TRACE("checking %s", s.GetFilename().c_str());
+                          TRACE("checking %s", s->GetFilename().c_str());
                           if (std::count_if(p.Segments().begin(),
                                 p.Segments().end(),
-                                [s](const Segment& s2) {
-                                  return s2.GetFilename() == s.GetFilename();
+                                [s](const segment_t& s2) {
+                                  return s2->GetFilename() == s->GetFilename();
                                 })) {
 
                             if (!merged_new_segment) {
@@ -336,17 +343,17 @@ class IndexWriterWorker final {
                           }
                           return true;
           });
-          TRACE("merged segment %s", p.MergedSegment().GetFilename().c_str());
+          TRACE("merged segment %s", p.MergedSegment()->GetFilename().c_str());
           TRACE("1st segment after merge: %s",
-                new_segments[0].GetFilename().c_str());
+                new_segments[0]->GetFilename().c_str());
 
           segments_.swap(new_segments);
           WriteToc();
 
           // delete old segment files
-          for (const Segment s : p.Segments()) {
-            TRACE("delete old file: %s", s.GetFilename().c_str());
-            std::remove(s.GetPath().string().c_str());
+          for (const segment_t& s : p.Segments()) {
+            TRACE("delete old file: %s", s->GetFilename().c_str());
+            std::remove(s->GetPath().string().c_str());
           }
 
           p.SetMerged();
@@ -354,9 +361,9 @@ class IndexWriterWorker final {
         } else {
           // the merge process failed
           TRACE("merge failed, reset markers");
-          // mark all segments as mergable again
-          for (auto s : p.Segments()) {
-            s.UnMarkMerge();
+          // mark all segments as mergeable again
+          for (const segment_t& s : p.Segments()) {
+            s->UnMarkMerge();
           }
 
           // todo throttle strategy?
@@ -368,10 +375,7 @@ class IndexWriterWorker final {
     if (any_merge_finalized) {
       TRACE("delete merge job");
 
-      merge_jobs_.erase(std::remove_if(merge_jobs_.begin(),
-                                       merge_jobs_.end(),
-                                       [](const MergeJob& j)
-                                         {return j.Merged();}));
+      merge_jobs_.remove_if([](const MergeJob& j){return j.Merged();});
     }
   }
 
@@ -389,11 +393,10 @@ class IndexWriterWorker final {
       return;
     }
 
-    std::vector<Segment> to_merge;
-
-    for (auto s : segments_) {
-      if (!s.MarkedForMerge()) {
-        TRACE("Add to merge list %s", s.GetFilename().c_str());
+    std::vector<segment_t> to_merge;
+    for (segment_t& s : segments_) {
+      if (!s->MarkedForMerge()) {
+        TRACE("Add to merge list %s", s->GetFilename().c_str());
         to_merge.push_back(s);
       }
     }
@@ -405,20 +408,18 @@ class IndexWriterWorker final {
     TRACE("enough segments found for merging");
     boost::filesystem::path p(index_directory_);
     p /= boost::filesystem::unique_path("%%%%-%%%%-%%%%-%%%%.kv");
-    Segment parent_segment(p, false);
 
-
-    for (auto s : to_merge) {
-      s.MarkMerge(&parent_segment);
+    for (segment_t& s : to_merge) {
+      s->MarkMerge();
     }
 
-    merge_jobs_.emplace_back(to_merge, parent_segment);
+    merge_jobs_.emplace_back(to_merge, p);
     merge_jobs_.back().Run();
   }
 
-  void RegisterSegment(Segment segment) {
+  void RegisterSegment(segment_t segment) {
     std::lock_guard<std::recursive_mutex> lock(index_mutex_);
-    TRACE("add segment %s", segment.GetFilename().c_str());
+    TRACE("add segment %s", segment->GetFilename().c_str());
     segments_.push_back(segment);
     WriteToc();
   }
@@ -433,9 +434,9 @@ class IndexWriterWorker final {
     TRACE("Number of segments: %ld", segments_.size());
 
     for (auto s : segments_) {
-      TRACE("put %s", s.GetFilename().c_str());
+      TRACE("put %s", s->GetFilename().c_str());
       boost::property_tree::ptree sp;
-      sp.put("", s.GetFilename());
+      sp.put("", s->GetFilename());
       files.push_back(std::make_pair("", sp));
     }
 

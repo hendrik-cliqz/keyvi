@@ -67,8 +67,6 @@ BOOST_AUTO_TEST_CASE(bigger_feed) {
   for (int i = 0; i < 100000; ++i) {
     writer.Set("a", "{\"id\":" + std::to_string(i) + "}");
   }
-
-
 }
 
 BOOST_AUTO_TEST_SUITE_END()
