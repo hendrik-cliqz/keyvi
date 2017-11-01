@@ -47,6 +47,7 @@
 #include "dictionary/fsa/internal/serialization_utils.h"
 #include "dictionary/match.h"
 #include "index/internal/index_writer_worker.h"
+#include "index/internal/base_index_reader.h"
 
 // #define ENABLE_TRACING
 #include "dictionary/util/trace.h"
@@ -54,10 +55,10 @@
 namespace keyvi {
 namespace index {
 
-class IndexWriter final {
+class IndexWriter final : internal::BaseIndexReader<internal::IndexWriterWorker> {
  public:
   explicit IndexWriter(const std::string& index_directory)
-      : index_finalizer_(index_directory) {
+      : index_finalizer_(index_directory), BaseIndexReader(index_finalizer_) {
     index_directory_ = index_directory;
 
     index_toc_file_ = index_directory_;
@@ -96,7 +97,9 @@ class IndexWriter final {
     index_finalizer_.ReleaseCompiler();
   }
 
-  void Delete() {}
+  void Delete() {
+
+  }
 
   void Flush(bool async = true) {
     TRACE("Flush (manually)");

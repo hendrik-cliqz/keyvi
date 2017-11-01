@@ -43,6 +43,7 @@
 #include "dictionary/fsa/internal/serialization_utils.h"
 #include "dictionary/match.h"
 #include "index/internal/segment.h"
+#include "index/internal/base_index_reader.h"
 #include "index/internal/index_reader_worker.h"
 
 
@@ -52,39 +53,17 @@
 namespace keyvi {
 namespace index {
 
-class IndexReader final {
+class IndexReader final :
+public internal::BaseIndexReader<internal::IndexReaderWorker>{
  public:
   IndexReader(const std::string index_directory,
               size_t refresh_interval = 1 /*, optional external logger*/)
-      : worker_(index_directory, refresh_interval) {
+      : worker_(index_directory, refresh_interval), BaseIndexReader(worker_) {
     worker_.StartWorkerThread();
   }
 
   ~IndexReader() {
     worker_.StopWorkerThread();
-  }
-
-  dictionary::Match operator[](const std::string& key) const {
-    dictionary::Match m;
-
-    for (auto s : worker_.Segments()) {
-      m = (*s)->operator[](key);
-      if (!m.IsEmpty()) {
-        return m;
-      }
-    }
-
-    return m;
-  }
-
-  bool Contains(const std::string& key) const {
-    for (auto s : worker_.Segments()) {
-      if ((*s)->Contains(key)) {
-        return true;
-      }
-    }
-
-    return false;
   }
 
   void Reload() {
